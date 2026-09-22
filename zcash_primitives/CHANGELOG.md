@@ -10,6 +10,13 @@ workspace.
 
 ## [Unreleased]
 
+### Added
+- `zcash_primitives::transaction::components::sprout`:
+  - `JsDescription::{from_parts, ephemeral_key, ciphertexts, proof}`
+  - `SproutProof` (previously crate-private)
+  - `PHGR_PROOF_SIZE`, `ZC_NUM_JS_INPUTS`, `ZC_NUM_JS_OUTPUTS`, `NOTE_CIPHERTEXT_SIZE`
+  - `impl {PartialEq, Eq} for {Bundle, JsDescription, SproutProof}`
+
 ## [0.31.0-pre.1] - 2026-10-06
 
 ### Changed

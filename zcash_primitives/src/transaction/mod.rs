@@ -29,10 +29,7 @@ use zcash_protocol::{
 use zcash_protocol::consensus::BranchId::*;
 
 use self::{
-    components::{
-        orchard as orchard_serialization, sapling as sapling_serialization,
-        sprout::{self, JsDescription},
-    },
+    components::{orchard as orchard_serialization, sapling as sapling_serialization, sprout},
     txid::{BlockTxCommitmentDigester, TxIdDigester, to_txid},
 };
 use ::transparent::util::sha256d::{HashReader, HashWriter};
@@ -995,22 +992,7 @@ impl Transaction {
             sapling_serialization::read_v4_components(&mut reader, version.has_sapling())?;
 
         let sprout_bundle = if version.has_sprout() {
-            let joinsplits = Vector::read(&mut reader, |r| {
-                JsDescription::read(r, version.has_sapling())
-            })?;
-
-            if !joinsplits.is_empty() {
-                let mut bundle = sprout::Bundle {
-                    joinsplits,
-                    joinsplit_pubkey: [0; 32],
-                    joinsplit_sig: [0; 64],
-                };
-                reader.read_exact(&mut bundle.joinsplit_pubkey)?;
-                reader.read_exact(&mut bundle.joinsplit_sig)?;
-                Some(bundle)
-            } else {
-                None
-            }
+            sprout::read_bundle(&mut reader, version.has_sapling())?
         } else {
             None
         };
@@ -1213,13 +1195,7 @@ impl Transaction {
         )?;
 
         if self.version.has_sprout() {
-            if let Some(bundle) = self.sprout_bundle.as_ref() {
-                Vector::write(&mut writer, &bundle.joinsplits, |w, e| e.write(w))?;
-                writer.write_all(&bundle.joinsplit_pubkey)?;
-                writer.write_all(&bundle.joinsplit_sig)?;
-            } else {
-                CompactSize::write(&mut writer, 0)?;
-            }
+            sprout::write_bundle(&mut writer, self.sprout_bundle.as_ref())?;
         }
 
         if self.version.has_sapling()
