@@ -1,5 +1,4 @@
 //! Functions for parsing & serialization of Orchard transaction components.
-use crate::encoding::ReadBytesExt;
 
 use alloc::vec::Vec;
 use core::convert::TryFrom;
@@ -101,6 +100,22 @@ impl MapAuth<Authorized, Authorized> for () {
     }
 }
 
+/// Chunk size for [`read_proof_bytes`] (memory grows with bytes read, not untrusted `sizeProofs`)
+const PROOF_READ_CHUNK_SIZE: usize = 4096;
+
+/// Reads the `sizeProofs` and `proofs` fields of a bundle
+fn read_proof_bytes<R: Read>(mut reader: R) -> io::Result<Vec<u8>> {
+    let len: usize = CompactSize::read_t(&mut reader)?;
+    let mut proof = Vec::new();
+    let mut chunk = [0u8; PROOF_READ_CHUNK_SIZE];
+    while proof.len() < len {
+        let n = chunk.len().min(len - proof.len());
+        reader.read_exact(&mut chunk[..n])?;
+        proof.extend_from_slice(&chunk[..n]);
+    }
+    Ok(proof)
+}
+
 fn read_bundle<R: Read>(
     mut reader: R,
     bundle_version: Option<BundleVersion>,
@@ -120,7 +135,7 @@ fn read_bundle<R: Read>(
         let flags = read_flags(&mut reader, bundle_version)?;
         let value_balance = Transaction::read_amount(&mut reader)?;
         let anchor = read_anchor(&mut reader)?;
-        let proof_bytes = Vector::read(&mut reader, |r| r.read_u8())?;
+        let proof_bytes = read_proof_bytes(&mut reader)?;
         let actions = NonEmpty::from_vec(
             actions_without_auth
                 .into_iter()
@@ -340,11 +355,9 @@ fn write_bundle<W: Write>(
         writer.write_all(&[bundle.flag_byte()])?;
         writer.write_all(&bundle.value_balance().to_i64_le_bytes())?;
         writer.write_all(&bundle.anchor().to_bytes())?;
-        Vector::write(
-            &mut writer,
-            bundle.authorization().proof().as_ref(),
-            |w, b| w.write_all(&[*b]),
-        )?;
+        let proof = bundle.authorization().proof().as_ref();
+        CompactSize::write(&mut writer, proof.len())?;
+        writer.write_all(proof)?;
         Array::write(
             &mut writer,
             bundle.actions().iter().map(|a| a.authorization()),
@@ -537,12 +550,14 @@ mod tests {
 
     use orchard::{bundle::testing::arb_action, note::NoteVersion, value::NoteValue};
     use proptest::prelude::*;
+    use zcash_encoding::{CompactSize, MAX_COMPACT_SIZE};
 
     use super::{
         ACTION_SIZE, ENC_CIPHERTEXT_SIZE, EPHEMERAL_KEY_BYTE_SIZE, NOTE_COMMITMENT_BYTE_SIZE,
-        NULLIFIER_BYTE_SIZE, OUT_CIPHERTEXT_SIZE, VALUE_COMMITMENT_BYTE_SIZE,
-        VERIFICATION_KEY_BYTE_SIZE, io, write_action_without_auth, write_cmx,
-        write_note_ciphertext, write_nullifier, write_value_commitment, write_verification_key,
+        NULLIFIER_BYTE_SIZE, OUT_CIPHERTEXT_SIZE, PROOF_READ_CHUNK_SIZE,
+        VALUE_COMMITMENT_BYTE_SIZE, VERIFICATION_KEY_BYTE_SIZE, io, read_proof_bytes,
+        write_action_without_auth, write_cmx, write_note_ciphertext, write_nullifier,
+        write_value_commitment, write_verification_key,
     };
 
     // Returns the number of bytes `write` emits.
@@ -598,5 +613,24 @@ mod tests {
                 EPHEMERAL_KEY_BYTE_SIZE + ENC_CIPHERTEXT_SIZE + OUT_CIPHERTEXT_SIZE
             );
         }
+    }
+
+    /// Multi-chunk proof (partial final chunk) round-trips; truncation & max `sizeProofs` error
+    #[test]
+    fn proof_bytes_read_back_and_reject_truncation() {
+        let proof: Vec<u8> = (0..2 * PROOF_READ_CHUNK_SIZE + 1)
+            .map(|i| i as u8)
+            .collect();
+        let mut encoding = Vec::new();
+        CompactSize::write(&mut encoding, proof.len()).unwrap();
+        encoding.extend_from_slice(&proof);
+
+        assert_eq!(read_proof_bytes(&encoding[..]).unwrap(), proof);
+        assert!(read_proof_bytes(&encoding[..encoding.len() - 1]).is_err());
+
+        let mut oversized = Vec::new();
+        CompactSize::write(&mut oversized, MAX_COMPACT_SIZE as usize).unwrap();
+        oversized.push(0);
+        assert!(read_proof_bytes(&oversized[..]).is_err());
     }
 }
