@@ -222,7 +222,7 @@ pub(crate) fn hash_sapling_outputs<A>(shielded_outputs: &[OutputDescription<A>])
 
 /// The txid commits to the hash of all transparent outputs. The
 /// prevout and sequence_hash components of txid
-fn transparent_digests<A: transparent::Authorization>(
+pub(crate) fn transparent_digests<A: transparent::Authorization>(
     bundle: &transparent::Bundle<A>,
 ) -> TransparentDigests<Blake2bHash> {
     TransparentDigests {
@@ -233,7 +233,7 @@ fn transparent_digests<A: transparent::Authorization>(
 }
 
 /// Implements [ZIP 244 section T.1](https://zips.z.cash/zip-0244#t-1-header-digest)
-fn hash_header_txid_data(
+pub(crate) fn hash_header_txid_data(
     version: TxVersion,
     // we commit to the consensus branch ID with the header
     consensus_branch_id: BranchId,
@@ -289,6 +289,39 @@ fn hash_sapling_txid_empty() -> Blake2bHash {
     hasher(ZCASH_SAPLING_HASH_PERSONALIZATION).finalize()
 }
 
+/// ZIP 244 Sapling txid digest (`None` if no bundle)
+pub(crate) fn sapling_txid_digest<A: sapling::bundle::Authorization>(
+    version: TxVersion,
+    bundle: Option<&sapling::Bundle<A, ZatBalance>>,
+) -> Option<Blake2bHash> {
+    bundle.map(|bundle| hash_sapling_txid_data(version, bundle))
+}
+
+/// ZIP 244 Orchard txid digest (`None` if no bundle)
+pub(crate) fn orchard_txid_digest<A: orchard::Authorization>(
+    version: TxVersion,
+    bundle: Option<&orchard::Bundle<A, ZatBalance>>,
+) -> Option<Blake2bHash> {
+    bundle.map(|b| {
+        let (_, tx_version) = orchard_commitment_domain(version);
+        b.commitment(tx_version)
+            .expect("Orchard bundle flags must be representable in their transaction format")
+            .0
+    })
+}
+
+/// ZIP 244 Ironwood txid digest (`None` if no bundle)
+pub(crate) fn ironwood_txid_digest<A: orchard::Authorization>(
+    bundle: Option<&orchard::Bundle<A, ZatBalance>>,
+) -> Option<Blake2bHash> {
+    bundle.map(|b| {
+        let (_, tx_version) = ironwood_v6_domain();
+        b.commitment(tx_version)
+            .expect("Ironwood bundle flags must be representable")
+            .0
+    })
+}
+
 /// A TransactionDigest implementation that commits to all of the effecting
 /// data of a transaction to produce a nonmalleable transaction identifier.
 ///
@@ -329,7 +362,7 @@ impl<A: Authorization> TransactionDigest<A> for TxIdDigester {
         version: TxVersion,
         sapling_bundle: Option<&sapling::Bundle<A::SaplingAuth, ZatBalance>>,
     ) -> Self::SaplingDigest {
-        sapling_bundle.map(|bundle| hash_sapling_txid_data(version, bundle))
+        sapling_txid_digest(version, sapling_bundle)
     }
 
     fn digest_orchard(
@@ -337,24 +370,14 @@ impl<A: Authorization> TransactionDigest<A> for TxIdDigester {
         version: TxVersion,
         orchard_bundle: Option<&orchard::Bundle<A::OrchardAuth, ZatBalance>>,
     ) -> Self::OrchardDigest {
-        orchard_bundle.map(|b| {
-            let (_, tx_version) = orchard_commitment_domain(version);
-            b.commitment(tx_version)
-                .expect("Orchard bundle flags must be representable in their transaction format")
-                .0
-        })
+        orchard_txid_digest(version, orchard_bundle)
     }
 
     fn digest_ironwood(
         &self,
         ironwood_bundle: Option<&orchard::Bundle<A::OrchardAuth, ZatBalance>>,
     ) -> Self::IronwoodDigest {
-        ironwood_bundle.map(|b| {
-            let (_, tx_version) = ironwood_v6_domain();
-            b.commitment(tx_version)
-                .expect("Ironwood bundle flags must be representable")
-                .0
-        })
+        ironwood_txid_digest(ironwood_bundle)
     }
 
     fn combine(
@@ -492,6 +515,110 @@ pub fn to_txid(
     TxId::from_bytes(<[u8; 32]>::try_from(txid_digest.as_bytes()).unwrap())
 }
 
+/// ZIP 244 transparent authorizing-data digest (input scripts)
+pub(crate) fn transparent_auth_digest(
+    transparent_bundle: Option<&transparent::Bundle<transparent::Authorized>>,
+) -> Blake2bHash {
+    let mut h = hasher(ZCASH_TRANSPARENT_SCRIPTS_HASH_PERSONALIZATION);
+    if let Some(bundle) = transparent_bundle {
+        for txin in &bundle.vin {
+            txin.script_sig().write(&mut h).unwrap();
+        }
+    }
+    h.finalize()
+}
+
+/// ZIP 244 Sapling authorizing-data digest
+pub(crate) fn sapling_auth_digest(
+    version: TxVersion,
+    sapling_bundle: Option<&sapling::Bundle<sapling::bundle::Authorized, ZatBalance>>,
+) -> Blake2bHash {
+    let mut h = hasher(sapling_auth_personalization(version));
+    if let Some(bundle) = sapling_bundle {
+        for spend in bundle.shielded_spends() {
+            h.write_all(spend.zkproof()).unwrap();
+        }
+
+        for spend in bundle.shielded_spends() {
+            h.write_all(&<[u8; 64]>::from(*spend.spend_auth_sig()))
+                .unwrap();
+        }
+
+        for output in bundle.shielded_outputs() {
+            h.write_all(output.zkproof()).unwrap();
+        }
+
+        h.write_all(&<[u8; 64]>::from(bundle.authorization().binding_sig))
+            .unwrap();
+
+        if sapling_auth_includes_anchor(version) && !bundle.shielded_spends().is_empty() {
+            h.write_all(bundle.shielded_spends()[0].anchor().to_repr().as_ref())
+                .unwrap();
+        }
+    }
+    h.finalize()
+}
+
+/// ZIP 244 authorizing-data digest of an Orchard-protocol bundle, under its pool's domain
+fn orchard_shaped_auth_digest(
+    (value_pool, tx_version): (ValuePool, OrchardTxVersion),
+    bundle: Option<&orchard::Bundle<orchard::Authorized, ZatBalance>>,
+) -> Blake2bHash {
+    bundle.map_or_else(
+        || {
+            orchard::commitments::hash_bundle_auth_empty(value_pool, tx_version)
+                .expect("empty Orchard-protocol bundle auth commitment is valid for its tx format")
+        },
+        |b| {
+            b.authorizing_commitment(tx_version)
+                .expect("Orchard-protocol bundle flags must be representable in their tx format")
+                .0
+        },
+    )
+}
+
+/// ZIP 244 Orchard authorizing-data digest
+pub(crate) fn orchard_auth_digest(
+    version: TxVersion,
+    bundle: Option<&orchard::Bundle<orchard::Authorized, ZatBalance>>,
+) -> Blake2bHash {
+    orchard_shaped_auth_digest(orchard_commitment_domain(version), bundle)
+}
+
+/// ZIP 244 Ironwood authorizing-data digest
+pub(crate) fn ironwood_auth_digest(
+    bundle: Option<&orchard::Bundle<orchard::Authorized, ZatBalance>>,
+) -> Blake2bHash {
+    orchard_shaped_auth_digest(ironwood_v6_domain(), bundle)
+}
+
+/// Combines the per-pool authorizing-data digests into the ZIP 244 auth commitment
+pub(crate) fn combine_auth_digests(
+    version: TxVersion,
+    consensus_branch_id: BranchId,
+    transparent_digest: Blake2bHash,
+    sapling_digest: Blake2bHash,
+    orchard_digest: Blake2bHash,
+    ironwood_digest: Blake2bHash,
+) -> Blake2bHash {
+    let mut personal = [0; 16];
+    personal[..12].copy_from_slice(ZCASH_AUTH_PERSONALIZATION_PREFIX);
+    (&mut personal[12..])
+        .write_u32_le(consensus_branch_id.into())
+        .unwrap();
+
+    let mut h = hasher(&personal);
+    h.write_all(transparent_digest.as_bytes()).unwrap();
+    h.write_all(sapling_digest.as_bytes()).unwrap();
+    h.write_all(orchard_digest.as_bytes()).unwrap();
+
+    if version.has_ironwood() {
+        h.write_all(ironwood_digest.as_bytes()).unwrap();
+    }
+
+    h.finalize()
+}
+
 /// Digester which constructs a digest of only the witness data.
 /// This does not internally commit to the txid, so if that is
 /// desired it should be done using the result of this digest
@@ -524,13 +651,7 @@ impl TransactionDigest<Authorized> for BlockTxCommitmentDigester {
         &self,
         transparent_bundle: Option<&transparent::Bundle<transparent::Authorized>>,
     ) -> Blake2bHash {
-        let mut h = hasher(ZCASH_TRANSPARENT_SCRIPTS_HASH_PERSONALIZATION);
-        if let Some(bundle) = transparent_bundle {
-            for txin in &bundle.vin {
-                txin.script_sig().write(&mut h).unwrap();
-            }
-        }
-        h.finalize()
+        transparent_auth_digest(transparent_bundle)
     }
 
     fn digest_sapling(
@@ -538,30 +659,7 @@ impl TransactionDigest<Authorized> for BlockTxCommitmentDigester {
         version: TxVersion,
         sapling_bundle: Option<&sapling::Bundle<sapling::bundle::Authorized, ZatBalance>>,
     ) -> Blake2bHash {
-        let mut h = hasher(sapling_auth_personalization(version));
-        if let Some(bundle) = sapling_bundle {
-            for spend in bundle.shielded_spends() {
-                h.write_all(spend.zkproof()).unwrap();
-            }
-
-            for spend in bundle.shielded_spends() {
-                h.write_all(&<[u8; 64]>::from(*spend.spend_auth_sig()))
-                    .unwrap();
-            }
-
-            for output in bundle.shielded_outputs() {
-                h.write_all(output.zkproof()).unwrap();
-            }
-
-            h.write_all(&<[u8; 64]>::from(bundle.authorization().binding_sig))
-                .unwrap();
-
-            if sapling_auth_includes_anchor(version) && !bundle.shielded_spends().is_empty() {
-                h.write_all(bundle.shielded_spends()[0].anchor().to_repr().as_ref())
-                    .unwrap();
-            }
-        }
-        h.finalize()
+        sapling_auth_digest(version, sapling_bundle)
     }
 
     fn digest_orchard(
@@ -569,36 +667,14 @@ impl TransactionDigest<Authorized> for BlockTxCommitmentDigester {
         version: TxVersion,
         orchard_bundle: Option<&orchard::Bundle<orchard::Authorized, ZatBalance>>,
     ) -> Self::OrchardDigest {
-        let (value_pool, tx_version) = orchard_commitment_domain(version);
-        orchard_bundle.map_or_else(
-            || {
-                orchard::commitments::hash_bundle_auth_empty(value_pool, tx_version)
-                    .expect("empty Orchard bundle auth commitment is valid for its tx format")
-            },
-            |b| {
-                b.authorizing_commitment(tx_version)
-                    .expect("Orchard bundle flags must be representable in their tx format")
-                    .0
-            },
-        )
+        orchard_auth_digest(version, orchard_bundle)
     }
 
     fn digest_ironwood(
         &self,
         ironwood_bundle: Option<&orchard::Bundle<orchard::Authorized, ZatBalance>>,
     ) -> Self::IronwoodDigest {
-        let (value_pool, tx_version) = ironwood_v6_domain();
-        ironwood_bundle.map_or_else(
-            || {
-                orchard::commitments::hash_bundle_auth_empty(value_pool, tx_version)
-                    .expect("empty Ironwood bundle auth commitment is valid")
-            },
-            |b| {
-                b.authorizing_commitment(tx_version)
-                    .expect("Ironwood bundle flags must be representable")
-                    .0
-            },
-        )
+        ironwood_auth_digest(ironwood_bundle)
     }
 
     fn combine(
@@ -609,22 +685,14 @@ impl TransactionDigest<Authorized> for BlockTxCommitmentDigester {
         orchard_digest: Self::OrchardDigest,
         ironwood_digest: Self::IronwoodDigest,
     ) -> Self::Digest {
-        let (_txversion, consensus_branch_id) = tx_context;
-        let mut personal = [0; 16];
-        personal[..12].copy_from_slice(ZCASH_AUTH_PERSONALIZATION_PREFIX);
-        (&mut personal[12..])
-            .write_u32_le(consensus_branch_id.into())
-            .unwrap();
-
-        let mut h = hasher(&personal);
-        h.write_all(transparent_digest.as_bytes()).unwrap();
-        h.write_all(sapling_digest.as_bytes()).unwrap();
-        h.write_all(orchard_digest.as_bytes()).unwrap();
-
-        if _txversion.has_ironwood() {
-            h.write_all(ironwood_digest.as_bytes()).unwrap();
-        }
-
-        h.finalize()
+        let (version, consensus_branch_id) = tx_context;
+        combine_auth_digests(
+            version,
+            consensus_branch_id,
+            transparent_digest,
+            sapling_digest,
+            orchard_digest,
+            ironwood_digest,
+        )
     }
 }
