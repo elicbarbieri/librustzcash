@@ -2,17 +2,24 @@
 
 use alloc::vec::Vec;
 use corez::io::{self, Read, Write};
+use zcash_encoding::{CompactSize, Vector};
 
 use super::GROTH_PROOF_SIZE;
-use zcash_protocol::value::ZatBalance;
+use zcash_protocol::value::{ZatBalance, Zatoshis};
 
-// π_A + π_A' + π_B + π_B' + π_C + π_C' + π_K + π_H
-const PHGR_PROOF_SIZE: usize = 33 + 33 + 65 + 33 + 33 + 33 + 33 + 33;
+/// Size in bytes of a BCTV14 ("PHGR") proof: π_A + π_A' + π_B + π_B' + π_C + π_C' + π_K + π_H
+pub const PHGR_PROOF_SIZE: usize = 33 + 33 + 65 + 33 + 33 + 33 + 33 + 33;
 
-const ZC_NUM_JS_INPUTS: usize = 2;
-const ZC_NUM_JS_OUTPUTS: usize = 2;
+/// Number of notes a JoinSplit spends
+pub const ZC_NUM_JS_INPUTS: usize = 2;
 
-#[derive(Debug, Clone)]
+/// Number of notes a JoinSplit creates
+pub const ZC_NUM_JS_OUTPUTS: usize = 2;
+
+/// Size in bytes of a Sprout note ciphertext
+pub const NOTE_CIPHERTEXT_SIZE: usize = 601;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bundle {
     pub joinsplits: Vec<JsDescription>,
     pub joinsplit_pubkey: [u8; 32],
@@ -31,10 +38,45 @@ impl Bundle {
     }
 }
 
-#[derive(Clone)]
+/// Reads the `nJoinSplit`, `vJoinSplit`, `joinSplitPubKey` and `joinSplitSig` fields
+/// (`None` if no JoinSplits; `use_groth` = v4)
+pub(crate) fn read_bundle<R: Read>(mut reader: R, use_groth: bool) -> io::Result<Option<Bundle>> {
+    let joinsplits = Vector::read(&mut reader, |r| JsDescription::read(r, use_groth))?;
+    if joinsplits.is_empty() {
+        return Ok(None);
+    }
+
+    let mut joinsplit_pubkey = [0; 32];
+    reader.read_exact(&mut joinsplit_pubkey)?;
+    let mut joinsplit_sig = [0; 64];
+    reader.read_exact(&mut joinsplit_sig)?;
+
+    Ok(Some(Bundle {
+        joinsplits,
+        joinsplit_pubkey,
+        joinsplit_sig,
+    }))
+}
+
+/// Writes the fields [`read_bundle`] reads
+pub(crate) fn write_bundle<W: Write>(mut writer: W, bundle: Option<&Bundle>) -> io::Result<()> {
+    match bundle {
+        Some(bundle) => {
+            Vector::write(&mut writer, &bundle.joinsplits, |w, e| e.write(w))?;
+            writer.write_all(&bundle.joinsplit_pubkey)?;
+            writer.write_all(&bundle.joinsplit_sig)
+        }
+        None => CompactSize::write(&mut writer, 0),
+    }
+}
+
+/// A JoinSplit proof
+#[derive(Clone, PartialEq, Eq)]
 #[allow(clippy::upper_case_acronyms)]
-pub(crate) enum SproutProof {
+pub enum SproutProof {
+    /// Groth16 (v4 transactions)
     Groth([u8; GROTH_PROOF_SIZE]),
+    /// BCTV14 (v2 & v3 transactions)
     PHGR([u8; PHGR_PROOF_SIZE]),
 }
 
@@ -47,7 +89,7 @@ impl core::fmt::Debug for SproutProof {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct JsDescription {
     pub(crate) vpub_old: ZatBalance,
     pub(crate) vpub_new: ZatBalance,
@@ -58,7 +100,7 @@ pub struct JsDescription {
     pub(crate) random_seed: [u8; 32],
     pub(crate) macs: [[u8; 32]; ZC_NUM_JS_INPUTS],
     pub(crate) proof: SproutProof,
-    pub(crate) ciphertexts: [[u8; 601]; ZC_NUM_JS_OUTPUTS],
+    pub(crate) ciphertexts: [[u8; NOTE_CIPHERTEXT_SIZE]; ZC_NUM_JS_OUTPUTS],
 }
 
 impl core::fmt::Debug for JsDescription {
@@ -86,6 +128,34 @@ impl core::fmt::Debug for JsDescription {
 }
 
 impl JsDescription {
+    /// Constructs a JoinSplit description (`vpub_old` & `vpub_new` non-negative, as on the wire)
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        vpub_old: Zatoshis,
+        vpub_new: Zatoshis,
+        anchor: [u8; 32],
+        nullifiers: [[u8; 32]; ZC_NUM_JS_INPUTS],
+        commitments: [[u8; 32]; ZC_NUM_JS_OUTPUTS],
+        ephemeral_key: [u8; 32],
+        random_seed: [u8; 32],
+        macs: [[u8; 32]; ZC_NUM_JS_INPUTS],
+        proof: SproutProof,
+        ciphertexts: [[u8; NOTE_CIPHERTEXT_SIZE]; ZC_NUM_JS_OUTPUTS],
+    ) -> Self {
+        JsDescription {
+            vpub_old: vpub_old.into(),
+            vpub_new: vpub_new.into(),
+            anchor,
+            nullifiers,
+            commitments,
+            ephemeral_key,
+            random_seed,
+            macs,
+            proof,
+            ciphertexts,
+        }
+    }
+
     pub fn read<R: Read>(mut reader: R, use_groth: bool) -> io::Result<Self> {
         // Consensus rule (§4.3): Canonical encoding is enforced here
         let vpub_old = {
@@ -146,7 +216,7 @@ impl JsDescription {
             SproutProof::PHGR(proof)
         };
 
-        let mut ciphertexts = [[0u8; 601]; ZC_NUM_JS_OUTPUTS];
+        let mut ciphertexts = [[0u8; NOTE_CIPHERTEXT_SIZE]; ZC_NUM_JS_OUTPUTS];
         ciphertexts
             .iter_mut()
             .try_for_each(|ct| reader.read_exact(ct))?;
@@ -220,6 +290,21 @@ impl JsDescription {
         &self.commitments
     }
 
+    /// Returns the ephemeral key used to encrypt the output notes of this JoinSplit.
+    pub fn ephemeral_key(&self) -> &[u8; 32] {
+        &self.ephemeral_key
+    }
+
+    /// Returns the encrypted output notes of this JoinSplit.
+    pub fn ciphertexts(&self) -> &[[u8; NOTE_CIPHERTEXT_SIZE]; ZC_NUM_JS_OUTPUTS] {
+        &self.ciphertexts
+    }
+
+    /// Returns the proof of this JoinSplit.
+    pub fn proof(&self) -> &SproutProof {
+        &self.proof
+    }
+
     /// Returns the random seed for this JoinSplit.
     pub fn random_seed(&self) -> &[u8; 32] {
         &self.random_seed
@@ -237,5 +322,59 @@ impl JsDescription {
             SproutProof::Groth(bytes) => Some(bytes),
             SproutProof::PHGR(_) => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use zcash_protocol::value::Zatoshis;
+
+    use super::{
+        Bundle, JsDescription, NOTE_CIPHERTEXT_SIZE, PHGR_PROOF_SIZE, SproutProof, read_bundle,
+        write_bundle,
+    };
+    use crate::transaction::components::GROTH_PROOF_SIZE;
+
+    fn joinsplit(proof: SproutProof) -> JsDescription {
+        JsDescription::from_parts(
+            Zatoshis::from_u64(5).unwrap(),
+            Zatoshis::ZERO,
+            [1; 32],
+            [[2; 32], [3; 32]],
+            [[4; 32], [5; 32]],
+            [6; 32],
+            [7; 32],
+            [[8; 32], [9; 32]],
+            proof,
+            [[10; NOTE_CIPHERTEXT_SIZE], [11; NOTE_CIPHERTEXT_SIZE]],
+        )
+    }
+
+    /// Round-trips under both proof systems; no JoinSplits = a single zero count
+    #[test]
+    fn bundle_round_trips_from_parts() {
+        for (proof, use_groth) in [
+            (SproutProof::Groth([12; GROTH_PROOF_SIZE]), true),
+            (SproutProof::PHGR([13; PHGR_PROOF_SIZE]), false),
+        ] {
+            let bundle = Bundle {
+                joinsplits: alloc::vec![joinsplit(proof.clone()), joinsplit(proof)],
+                joinsplit_pubkey: [14; 32],
+                joinsplit_sig: [15; 64],
+            };
+
+            let mut encoding = Vec::new();
+            write_bundle(&mut encoding, Some(&bundle)).unwrap();
+            let read = read_bundle(&encoding[..], use_groth).unwrap();
+            assert_eq!(read.as_ref(), Some(&bundle));
+            assert_eq!(read.unwrap().value_balance(), bundle.value_balance());
+        }
+
+        let mut empty = Vec::new();
+        write_bundle(&mut empty, None).unwrap();
+        assert_eq!(empty, [0]);
+        assert_eq!(read_bundle(&empty[..], true).unwrap(), None);
     }
 }

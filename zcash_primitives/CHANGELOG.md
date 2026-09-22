@@ -14,6 +14,11 @@ workspace.
 - Experimental `TxVersion::V7` and `TransactionData::from_parts_v7` support
   behind `zcash_unstable="nutachyon"`. V7 is enabled by NuTachyon and initially
   uses the V6 transaction body and digest structure.
+- `zcash_primitives::transaction::components::sprout`:
+  - `JsDescription::{from_parts, ephemeral_key, ciphertexts, proof}`
+  - `SproutProof` (previously crate-private)
+  - `PHGR_PROOF_SIZE`, `ZC_NUM_JS_INPUTS`, `ZC_NUM_JS_OUTPUTS`, `NOTE_CIPHERTEXT_SIZE`
+  - `impl {PartialEq, Eq} for {Bundle, JsDescription, SproutProof}`
 
 ### Changed
 - `BranchId::Nu7` is available without a custom compiler configuration, with
