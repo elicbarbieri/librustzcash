@@ -10,6 +10,13 @@ workspace.
 
 ## [Unreleased]
 
+### Added
+- `zcash_primitives::transaction::components::sprout`:
+  - `JsDescription::{from_parts, ephemeral_key, ciphertexts, proof}`
+  - `SproutProof` (previously crate-private)
+  - `PHGR_PROOF_SIZE`, `ZC_NUM_JS_INPUTS`, `ZC_NUM_JS_OUTPUTS`, `NOTE_CIPHERTEXT_SIZE`
+  - `impl {PartialEq, Eq} for {Bundle, JsDescription, SproutProof}`
+
 ## [0.31.0-pre.0] - 2026-09-30
 
 This release supports the NU7 upgrade on testnet.
