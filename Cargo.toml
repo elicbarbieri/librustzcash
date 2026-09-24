@@ -231,3 +231,10 @@ unexpected_cfgs = { level = "warn", check-cfg = [
   'cfg(zcash_unstable, values("nutachyon", "zip233"))',
   'cfg(live_network_tests)',
 ] }
+
+# orchard, sapling-crypto, incrementalmerkletree = elicbarbieri forks: zcash/orchard#562 &
+# zcash/sapling-crypto#204 + batched tree hashing (`Hashable::combine_pairs`); drop once released
+[patch.crates-io]
+incrementalmerkletree = { git = "https://github.com/elicbarbieri/incrementalmerkletree.git", rev = "d5e07689456e0be0154934aa39d347a9e5f18765" }
+orchard = { git = "https://github.com/elicbarbieri/orchard.git", rev = "b1d5b69cddbb205edc419a79ec3fa4c6a9c14a6d" }
+sapling-crypto = { git = "https://github.com/elicbarbieri/sapling-crypto.git", rev = "3c14da616116271fdf48ec032bbf31195e5f6c7f" }

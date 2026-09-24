@@ -16,6 +16,15 @@ workspace.
   - `SproutProof` (previously crate-private)
   - `PHGR_PROOF_SIZE`, `ZC_NUM_JS_INPUTS`, `ZC_NUM_JS_OUTPUTS`, `NOTE_CIPHERTEXT_SIZE`
   - `impl {PartialEq, Eq} for {Bundle, JsDescription, SproutProof}`
+- `zcash_primitives::transaction`:
+  - `{CompressedTransaction, CompressedTransactionData, DecompressionError, TransactionParts}`
+  - `Transaction::{compress, parts}`
+
+### Changed
+- `zcash_primitives::transaction::components::orchard::{write_v5_bundle, write_v6_bundle}`
+  take any `orchard::bundle::BundleEncoding` (was `orchard::Bundle`).
+- `Transaction::read` returns a point that breaks its encoding rules as an
+  `io::ErrorKind::InvalidData` error wrapping a `DecompressionError`.
 
 ## [0.31.0-pre.0] - 2026-09-30
 
