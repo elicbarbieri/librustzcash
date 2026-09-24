@@ -987,9 +987,9 @@ fn check_roundtrip(tx: Transaction) -> Result<(), TestCaseError> {
         .unwrap()
         .into_data()
         .freeze()
-        .unwrap();
-    prop_assert_eq!(compressed.txid(), refrozen.txid());
-    prop_assert_eq!(compressed.auth_commitment(), refrozen.auth_commitment());
+        .unwrap()
+        .compress();
+    prop_assert_eq!(&refrozen, &compressed);
     // Caller-held bundles: `from_parts` + `freeze` recomputes the same identity
     let rebuilt = match compressed.version() {
         TxVersion::V6 => CompressedTransactionData::from_parts_v6(
@@ -1014,8 +1014,7 @@ fn check_roundtrip(tx: Transaction) -> Result<(), TestCaseError> {
     }
     .freeze()
     .unwrap();
-    prop_assert_eq!(rebuilt.txid(), compressed.txid());
-    prop_assert_eq!(rebuilt.auth_commitment(), compressed.auth_commitment());
+    prop_assert_eq!(&rebuilt, &compressed);
     let mut compressed_bytes = vec![];
     compressed.write(&mut compressed_bytes).unwrap();
     prop_assert_eq!(&compressed_bytes, &txn_bytes);
@@ -1026,8 +1025,7 @@ fn check_roundtrip(tx: Transaction) -> Result<(), TestCaseError> {
     prop_assert_eq!(&decompressed_bytes, &txn_bytes);
     // `compress` inverts `decompress`: same identity, byte-identical encoding
     let recompressed = decompressed.compress();
-    prop_assert_eq!(recompressed.txid(), txo.txid());
-    prop_assert_eq!(recompressed.auth_commitment(), refrozen.auth_commitment());
+    prop_assert_eq!(&recompressed, &refrozen);
     let mut recompressed_bytes = vec![];
     recompressed.write(&mut recompressed_bytes).unwrap();
     prop_assert_eq!(&recompressed_bytes, &txn_bytes);
