@@ -3,15 +3,17 @@ use core::mem::size_of;
 use corez::io::{self, Read, Write};
 use ff::PrimeField;
 
+#[cfg(feature = "temporary-zcashd")]
+use ::sapling::bundle::{Bundle, OutputDescription, SpendDescription};
 use ::sapling::{
-    Nullifier,
     bundle::{
-        Authorization, Authorized, Bundle, GrothProofBytes, OutputDescription, OutputDescriptionV5,
-        SpendDescription, SpendDescriptionV5,
+        Authorization, Authorized, BundleBytes, BundleEncoding, GrothProofBytes,
+        OUTPUT_DESCRIPTION_V4_SIZE, OUTPUT_DESCRIPTION_V5_SIZE, OutputDescriptionBytes,
+        OutputDescriptionEncoding, OutputDescriptionV5Bytes, SPEND_DESCRIPTION_V4_SIZE,
+        SPEND_DESCRIPTION_V5_SIZE, SpendDescriptionBytes, SpendDescriptionEncoding,
+        SpendDescriptionV5Bytes,
     },
-    note::ExtractedNoteCommitment,
     note_encryption::Zip212Enforcement,
-    value::ValueCommitment,
 };
 use redjubjub::SpendAuth;
 use zcash_encoding::{Array, CompactSize, Vector};
@@ -139,28 +141,9 @@ impl MapAuth<Authorized, Authorized> for () {
     }
 }
 
-/// Consensus rules (§4.4) & (§4.5):
-/// - Canonical encoding is enforced here.
-/// - "Not small order" is enforced here.
-fn read_value_commitment<R: Read>(mut reader: R) -> io::Result<ValueCommitment> {
-    let mut bytes = [0u8; 32];
-    reader.read_exact(&mut bytes)?;
-    let cv = ValueCommitment::from_bytes_not_small_order(&bytes);
-
-    if cv.is_none().into() {
-        Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid cv"))
-    } else {
-        Ok(cv.unwrap())
-    }
-}
-
-/// Consensus rules (§7.3) & (§7.4):
-/// - Canonical encoding is enforced here
-fn read_cmu<R: Read>(mut reader: R) -> io::Result<ExtractedNoteCommitment> {
-    let mut f = [0u8; 32];
-    reader.read_exact(&mut f)?;
-    Option::from(ExtractedNoteCommitment::from_bytes(&f))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "cmu not in field"))
+/// Maps a description parse or decompression error to `InvalidInput`
+fn invalid_input<E: core::fmt::Display>(e: E) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, alloc::format!("{e}"))
 }
 
 /// Consensus rules (§7.3) & (§7.4):
@@ -188,22 +171,6 @@ pub fn read_zkproof<R: Read>(mut reader: R) -> io::Result<GrothProofBytes> {
     Ok(zkproof)
 }
 
-fn read_nullifier<R: Read>(mut reader: R) -> io::Result<Nullifier> {
-    let mut nullifier = Nullifier([0u8; 32]);
-    reader.read_exact(&mut nullifier.0)?;
-    Ok(nullifier)
-}
-
-/// Consensus rules (§4.4):
-/// - Canonical encoding is enforced here.
-/// - "Not small order" is enforced in SaplingVerificationContext::check_spend()
-fn read_rk<R: Read>(mut reader: R) -> io::Result<redjubjub::VerificationKey<SpendAuth>> {
-    let mut bytes = [0; 32];
-    reader.read_exact(&mut bytes)?;
-    redjubjub::VerificationKey::try_from(bytes)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "verification key is invalid"))
-}
-
 /// Consensus rules (§4.4):
 /// - Canonical encoding is enforced here.
 /// - Signature validity is enforced in SaplingVerificationContext::check_spend()
@@ -213,101 +180,72 @@ fn read_spend_auth_sig<R: Read>(mut reader: R) -> io::Result<redjubjub::Signatur
     Ok(redjubjub::Signature::from(sig))
 }
 
+/// Reads a v4 Spend description, `cv` & `rk` left compressed
+///
+/// Consensus rules (§4.4), (§4.5), (§7.3) & (§7.4):
+/// - `anchor` canonical encoding checked here
+/// - `cv` canonical & not small-order, `rk` canonical: [`SpendDescriptionBytes::decompress`]
+/// - `rk` not small-order: SaplingVerificationContext::check_spend()
+fn read_spend_v4<R: Read>(mut reader: R) -> io::Result<SpendDescriptionBytes<Authorized>> {
+    let mut bytes = [0u8; SPEND_DESCRIPTION_V4_SIZE];
+    reader.read_exact(&mut bytes)?;
+    SpendDescriptionBytes::from_bytes(&bytes).map_err(invalid_input)
+}
+
 #[cfg(feature = "temporary-zcashd")]
 pub fn temporary_zcashd_read_spend_v4<R: Read>(
     reader: R,
 ) -> io::Result<SpendDescription<Authorized>> {
-    read_spend_v4(reader)
+    read_spend_v4(reader)?.decompress().map_err(invalid_input)
 }
 
-fn read_spend_v4<R: Read>(mut reader: R) -> io::Result<SpendDescription<Authorized>> {
-    // Consensus rules (§4.4) & (§4.5):
-    // - Canonical encoding is enforced here.
-    // - "Not small order" is enforced in SaplingVerificationContext::(check_spend()/check_output())
-    //   (located in zcash_proofs::sapling::verifier).
-    let cv = read_value_commitment(&mut reader)?;
-    // Consensus rules (§7.3) & (§7.4):
-    // - Canonical encoding is enforced here
-    let anchor = read_base(&mut reader, "anchor")?;
-    let nullifier = read_nullifier(&mut reader)?;
-    let rk = read_rk(&mut reader)?;
-    let zkproof = read_zkproof(&mut reader)?;
-    let spend_auth_sig = read_spend_auth_sig(&mut reader)?;
-
-    Ok(SpendDescription::from_parts(
-        cv,
-        anchor,
-        nullifier,
-        rk,
-        zkproof,
-        spend_auth_sig,
-    ))
-}
-
-fn write_spend_v4<W: Write>(mut writer: W, spend: &SpendDescription<Authorized>) -> io::Result<()> {
-    writer.write_all(&spend.cv().to_bytes())?;
+fn write_spend_v4<W: Write>(
+    mut writer: W,
+    spend: &impl SpendDescriptionEncoding<Authorized>,
+) -> io::Result<()> {
+    writer.write_all(&spend.cv_bytes())?;
     writer.write_all(spend.anchor().to_repr().as_ref())?;
     writer.write_all(&spend.nullifier().0)?;
-    writer.write_all(&<[u8; 32]>::from(*spend.rk()))?;
+    writer.write_all(&spend.rk_bytes())?;
     writer.write_all(spend.zkproof())?;
     writer.write_all(&<[u8; 64]>::from(*spend.spend_auth_sig()))
 }
 
 fn write_spend_v5_without_witness_data<W: Write>(
     mut writer: W,
-    spend: &SpendDescription<Authorized>,
+    spend: &impl SpendDescriptionEncoding<Authorized>,
 ) -> io::Result<()> {
-    writer.write_all(&spend.cv().to_bytes())?;
+    writer.write_all(&spend.cv_bytes())?;
     writer.write_all(&spend.nullifier().0)?;
-    writer.write_all(&<[u8; 32]>::from(*spend.rk()))
+    writer.write_all(&spend.rk_bytes())
 }
 
-fn read_spend_v5<R: Read>(mut reader: &mut R) -> io::Result<SpendDescriptionV5> {
-    let cv = read_value_commitment(&mut reader)?;
-    let nullifier = read_nullifier(&mut reader)?;
-    let rk = read_rk(&mut reader)?;
+/// Reads the v5 Spend prefix (`cv`, nullifier, `rk`), `cv` & `rk` left compressed
+fn read_spend_v5<R: Read>(reader: &mut R) -> io::Result<SpendDescriptionV5Bytes> {
+    let mut bytes = [0u8; SPEND_DESCRIPTION_V5_SIZE];
+    reader.read_exact(&mut bytes)?;
+    Ok(SpendDescriptionV5Bytes::from_bytes(&bytes))
+}
 
-    Ok(SpendDescriptionV5::from_parts(cv, nullifier, rk))
+/// Reads a v4 Output description, `cv` left compressed
+///
+/// Consensus rules (§4.5) & (§7.4):
+/// - `cmu` canonical encoding checked here
+/// - `cv` canonical & not small-order: [`OutputDescriptionBytes::decompress`]
+/// - `epk`: SaplingVerificationContext::check_output()
+fn read_output_v4<R: Read>(reader: &mut R) -> io::Result<OutputDescriptionBytes<GrothProofBytes>> {
+    let mut bytes = [0u8; OUTPUT_DESCRIPTION_V4_SIZE];
+    reader.read_exact(&mut bytes)?;
+    OutputDescriptionBytes::from_bytes(&bytes).map_err(invalid_input)
 }
 
 #[cfg(feature = "temporary-zcashd")]
 pub fn temporary_zcashd_read_output_v4<R: Read>(
     mut reader: R,
 ) -> io::Result<OutputDescription<GrothProofBytes>> {
-    read_output_v4(&mut reader)
-}
-
-fn read_output_v4<R: Read>(mut reader: &mut R) -> io::Result<OutputDescription<GrothProofBytes>> {
-    // Consensus rules (§4.5):
-    // - Canonical encoding is enforced here.
-    // - "Not small order" is enforced in SaplingVerificationContext::check_output()
-    //   (located in zcash_proofs::sapling::verifier).
-    let cv = read_value_commitment(&mut reader)?;
-
-    // Consensus rule (§7.4): Canonical encoding is enforced here
-    let cmu = read_cmu(&mut reader)?;
-
-    // Consensus rules (§4.5):
-    // - Canonical encoding is enforced in librustzcash_sapling_check_output by zcashd
-    // - "Not small order" is enforced in SaplingVerificationContext::check_output()
-    let mut ephemeral_key = EphemeralKeyBytes([0u8; 32]);
-    reader.read_exact(&mut ephemeral_key.0)?;
-
-    let mut enc_ciphertext = [0u8; ENC_CIPHERTEXT_SIZE];
-    let mut out_ciphertext = [0u8; OUT_CIPHERTEXT_SIZE];
-    reader.read_exact(&mut enc_ciphertext)?;
-    reader.read_exact(&mut out_ciphertext)?;
-
-    let zkproof = read_zkproof(&mut reader)?;
-
-    Ok(OutputDescription::from_parts(
-        cv,
-        cmu,
-        ephemeral_key,
-        enc_ciphertext,
-        out_ciphertext,
-        zkproof,
-    ))
+    read_output_v4(&mut reader)?
+        .decompress()
+        .map_err(invalid_input)
 }
 
 #[cfg(feature = "temporary-zcashd")]
@@ -320,9 +258,9 @@ pub fn temporary_zcashd_write_output_v4<W: Write>(
 
 pub(crate) fn write_output_v4<W: Write>(
     mut writer: W,
-    output: &OutputDescription<GrothProofBytes>,
+    output: &impl OutputDescriptionEncoding<GrothProofBytes>,
 ) -> io::Result<()> {
-    writer.write_all(&output.cv().to_bytes())?;
+    writer.write_all(&output.cv_bytes())?;
     writer.write_all(output.cmu().to_bytes().as_ref())?;
     writer.write_all(output.ephemeral_key().as_ref())?;
     writer.write_all(output.enc_ciphertext())?;
@@ -332,37 +270,20 @@ pub(crate) fn write_output_v4<W: Write>(
 
 fn write_output_v5_without_proof<W: Write>(
     mut writer: W,
-    output: &OutputDescription<GrothProofBytes>,
+    output: &impl OutputDescriptionEncoding<GrothProofBytes>,
 ) -> io::Result<()> {
-    writer.write_all(&output.cv().to_bytes())?;
+    writer.write_all(&output.cv_bytes())?;
     writer.write_all(output.cmu().to_bytes().as_ref())?;
     writer.write_all(output.ephemeral_key().as_ref())?;
     writer.write_all(output.enc_ciphertext())?;
     writer.write_all(output.out_ciphertext())
 }
 
-fn read_output_v5<R: Read>(mut reader: &mut R) -> io::Result<OutputDescriptionV5> {
-    let cv = read_value_commitment(&mut reader)?;
-    let cmu = read_cmu(&mut reader)?;
-
-    // Consensus rules (§4.5):
-    // - Canonical encoding is enforced in librustzcash_sapling_check_output by zcashd
-    // - "Not small order" is enforced in SaplingVerificationContext::check_output()
-    let mut ephemeral_key = EphemeralKeyBytes([0u8; 32]);
-    reader.read_exact(&mut ephemeral_key.0)?;
-
-    let mut enc_ciphertext = [0u8; 580];
-    let mut out_ciphertext = [0u8; 80];
-    reader.read_exact(&mut enc_ciphertext)?;
-    reader.read_exact(&mut out_ciphertext)?;
-
-    Ok(OutputDescriptionV5::from_parts(
-        cv,
-        cmu,
-        ephemeral_key,
-        enc_ciphertext,
-        out_ciphertext,
-    ))
+/// Reads the v5 Output prefix, `cv` left compressed (`cmu` canonical encoding checked)
+fn read_output_v5<R: Read>(reader: &mut R) -> io::Result<OutputDescriptionV5Bytes> {
+    let mut bytes = [0u8; OUTPUT_DESCRIPTION_V5_SIZE];
+    reader.read_exact(&mut bytes)?;
+    OutputDescriptionV5Bytes::from_bytes(&bytes).map_err(invalid_input)
 }
 
 /// Reads the Sapling components of a v4 transaction.
@@ -376,27 +297,34 @@ pub fn temporary_zcashd_read_v4_components<R: Read>(
     Vec<SpendDescription<Authorized>>,
     Vec<OutputDescription<GrothProofBytes>>,
 )> {
-    read_v4_components(reader, tx_has_sapling)
+    let (vb, spends, outputs) = read_v4_components(reader, tx_has_sapling)?;
+    let spends = spends
+        .into_iter()
+        .map(|s| s.decompress().map_err(invalid_input))
+        .collect::<io::Result<_>>()?;
+    let outputs = outputs
+        .into_iter()
+        .map(|o| o.decompress().map_err(invalid_input))
+        .collect::<io::Result<_>>()?;
+    Ok((vb, spends, outputs))
 }
 
-/// Reads the Sapling components of a v4 transaction.
+/// Reads the Sapling components of a v4 transaction, points left compressed
 #[allow(clippy::type_complexity)]
 pub(crate) fn read_v4_components<R: Read>(
     mut reader: R,
     tx_has_sapling: bool,
 ) -> io::Result<(
     ZatBalance,
-    Vec<SpendDescription<Authorized>>,
-    Vec<OutputDescription<GrothProofBytes>>,
+    Vec<SpendDescriptionBytes<Authorized>>,
+    Vec<OutputDescriptionBytes<GrothProofBytes>>,
 )> {
     if tx_has_sapling {
         let vb = Transaction::read_amount(&mut reader)?;
         #[allow(clippy::redundant_closure)]
-        let ss: Vec<SpendDescription<Authorized>> =
-            Vector::read(&mut reader, |r| read_spend_v4(r))?;
+        let ss = Vector::read(&mut reader, |r| read_spend_v4(r))?;
         #[allow(clippy::redundant_closure)]
-        let so: Vec<OutputDescription<GrothProofBytes>> =
-            Vector::read(&mut reader, |r| read_output_v4(r))?;
+        let so = Vector::read(&mut reader, |r| read_output_v4(r))?;
         Ok((vb, ss, so))
     } else {
         Ok((ZatBalance::zero(), vec![], vec![]))
@@ -413,10 +341,10 @@ pub fn temporary_zcashd_write_v4_components<W: Write>(
     write_v4_components(writer, bundle, tx_has_sapling)
 }
 
-/// Writes the Sapling components of a v4 transaction.
-pub(crate) fn write_v4_components<W: Write>(
+/// Writes the Sapling components of a v4 transaction (point or bytes tier)
+pub(crate) fn write_v4_components<W: Write, B: BundleEncoding<Authorized, ZatBalance>>(
     mut writer: W,
-    bundle: Option<&Bundle<Authorized, ZatBalance>>,
+    bundle: Option<&B>,
     tx_has_sapling: bool,
 ) -> io::Result<()> {
     if tx_has_sapling {
@@ -446,10 +374,20 @@ pub(crate) fn write_v4_components<W: Write>(
 }
 
 /// Reads a [`Bundle`] from a v5 transaction format.
-#[allow(clippy::redundant_closure)]
+#[cfg(feature = "temporary-zcashd")]
 pub(crate) fn read_v5_bundle<R: Read>(
-    mut reader: R,
+    reader: R,
 ) -> io::Result<Option<Bundle<Authorized, ZatBalance>>> {
+    read_v5_bundle_bytes(reader)?
+        .map(|b| b.decompress().map_err(invalid_input))
+        .transpose()
+}
+
+/// Reads a [`BundleBytes`] from a v5 transaction format, points left compressed
+#[allow(clippy::redundant_closure)]
+pub(crate) fn read_v5_bundle_bytes<R: Read>(
+    mut reader: R,
+) -> io::Result<Option<BundleBytes<Authorized, ZatBalance>>> {
     let sd_v5s = Vector::read(&mut reader, read_spend_v5)?;
     let od_v5s = Vector::read(&mut reader, read_output_v5)?;
     let n_spends = sd_v5s.len();
@@ -483,18 +421,18 @@ pub(crate) fn read_v5_bundle<R: Read>(
         .zip(v_spend_proofs.into_iter().zip(v_spend_auth_sigs))
         .map(|(sd_5, (zkproof, spend_auth_sig))| {
             // the following `unwrap` is safe because we know n_spends > 0.
-            sd_5.into_spend_description(anchor.unwrap(), zkproof, spend_auth_sig)
+            sd_5.into_v4(anchor.unwrap(), zkproof, spend_auth_sig)
         })
         .collect();
 
     let shielded_outputs = od_v5s
         .into_iter()
         .zip(v_output_proofs)
-        .map(|(od_5, zkproof)| od_5.into_output_description(zkproof))
+        .map(|(od_5, zkproof)| od_5.into_v4(zkproof))
         .collect();
 
     Ok(binding_sig.and_then(|binding_sig| {
-        Bundle::from_parts(
+        BundleBytes::from_parts(
             shielded_spends,
             shielded_outputs,
             value_balance,
@@ -503,10 +441,10 @@ pub(crate) fn read_v5_bundle<R: Read>(
     }))
 }
 
-/// Writes a [`Bundle`] in the v5 transaction format.
-pub(crate) fn write_v5_bundle<W: Write>(
+/// Writes a Sapling bundle (point or bytes tier) in the v5 transaction format
+pub(crate) fn write_v5_bundle<W: Write, B: BundleEncoding<Authorized, ZatBalance>>(
     mut writer: W,
-    sapling_bundle: Option<&Bundle<Authorized, ZatBalance>>,
+    sapling_bundle: Option<&B>,
 ) -> io::Result<()> {
     if let Some(bundle) = sapling_bundle {
         Vector::write(&mut writer, bundle.shielded_spends(), |w, e| {

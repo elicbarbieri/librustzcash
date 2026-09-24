@@ -240,3 +240,8 @@ unexpected_cfgs = { level = "warn", check-cfg = [
   'cfg(zcash_unstable, values("nutachyon", "zip233"))',
   'cfg(live_network_tests)',
 ] }
+
+# TODO: drop once zcash/orchard#562 & zcash/sapling-crypto#204 release
+[patch.crates-io]
+orchard = { git = "https://github.com/elicbarbieri/orchard.git", rev = "0dc827e239b1edce01dd8f7053d05a1b03d939aa" }
+sapling-crypto = { git = "https://github.com/elicbarbieri/sapling-crypto.git", rev = "d78bfba7b06902ff26b4f9f17521f28f4441b9aa" }

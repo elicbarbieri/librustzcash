@@ -19,11 +19,18 @@ workspace.
   - `SproutProof` (previously crate-private)
   - `PHGR_PROOF_SIZE`, `ZC_NUM_JS_INPUTS`, `ZC_NUM_JS_OUTPUTS`, `NOTE_CIPHERTEXT_SIZE`
   - `impl {PartialEq, Eq} for {Bundle, JsDescription, SproutProof}`
+- `zcash_primitives::transaction`:
+  - `{CompressedTransaction, CompressedTransactionData, DecompressionError, TransactionParts}`
+  - `Transaction::{compress, parts}`
 
 ### Changed
 - Migrated to `zcash_encoding 0.5`.
 - `BranchId::Nu7` is available without a custom compiler configuration, with
   consensus branch ID `0x77190AD9`.
+- `zcash_primitives::transaction::components::orchard::{write_v5_bundle, write_v6_bundle}`
+  take any `orchard::bundle::BundleEncoding` (was `orchard::Bundle`).
+- `Transaction::read` returns a point that breaks its encoding rules as an
+  `io::ErrorKind::InvalidData` error wrapping a `DecompressionError`.
 
 ## [0.30.1] - 2026-08-18
 

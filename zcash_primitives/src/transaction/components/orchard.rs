@@ -8,8 +8,8 @@ use nonempty::NonEmpty;
 
 use core::mem::size_of;
 use orchard::{
-    Action, Anchor, ValuePool,
-    bundle::{Authorization, Authorized, BundleVersion, Flags},
+    ACTION_DESCRIPTION_SIZE, Action, ActionBytes, Anchor, ValuePool,
+    bundle::{ActionEncoding, Authorization, Authorized, BundleEncoding, BundleVersion, Flags},
     note::{ExtractedNoteCommitment, Nullifier, TransmittedNoteCiphertext},
     primitives::redpallas::{self, SigType, Signature, SpendAuth, VerificationKey},
     value::ValueCommitment,
@@ -103,9 +103,9 @@ impl MapAuth<Authorized, Authorized> for () {
 fn read_bundle<R: Read>(
     mut reader: R,
     bundle_version: Option<BundleVersion>,
-) -> io::Result<Option<orchard::Bundle<Authorized, ZatBalance>>> {
+) -> io::Result<Option<orchard::BundleBytes<Authorized, ZatBalance>>> {
     #[allow(clippy::redundant_closure)]
-    let actions_without_auth = Vector::read(&mut reader, |r| read_action_without_auth(r))?;
+    let actions_without_auth = Vector::read(&mut reader, |r| read_action_bytes_without_auth(r))?;
     if actions_without_auth.is_empty() {
         Ok(None)
     } else {
@@ -123,7 +123,10 @@ fn read_bundle<R: Read>(
         let actions = NonEmpty::from_vec(
             actions_without_auth
                 .into_iter()
-                .map(|act| act.try_map(|_| read_signature::<_, redpallas::SpendAuth>(&mut reader)))
+                .map(|act| {
+                    read_signature::<_, redpallas::SpendAuth>(&mut reader)
+                        .map(|sig| act.with_authorization(sig))
+                })
                 .collect::<Result<Vec<_>, _>>()?,
         )
         .expect("A nonzero number of actions was read from the transaction data.");
@@ -138,7 +141,7 @@ fn read_bundle<R: Read>(
         // of actions, preventing a proof padded with arbitrary data (GHSA-2x4w-pxqw-58v9). Proof
         // size is enforced for every version except the historical pre-NU6.2 Orchard pool
         // ([`BundleVersion::orchard_insecure_v1`]); see the `bundle_version` chosen by the caller.
-        orchard::Bundle::try_from_parts(
+        orchard::BundleBytes::try_from_parts(
             actions,
             flags,
             value_balance,
@@ -149,6 +152,18 @@ fn read_bundle<R: Read>(
         .map(Some)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
+}
+
+/// Decompresses a bundle from [`read_bundle`], checking the point rules
+fn decompress_bundle(
+    bundle: Option<orchard::BundleBytes<Authorized, ZatBalance>>,
+) -> io::Result<Option<orchard::Bundle<Authorized, ZatBalance>>> {
+    bundle
+        .map(|b| {
+            b.decompress()
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        })
+        .transpose()
 }
 
 /// Returns the [`BundleVersion`] in effect for the given Orchard-protocol value pool
@@ -194,6 +209,14 @@ pub fn read_v5_bundle<R: Read>(
     reader: R,
     consensus_branch_id: BranchId,
 ) -> io::Result<Option<orchard::Bundle<Authorized, ZatBalance>>> {
+    decompress_bundle(read_v5_bundle_bytes(reader, consensus_branch_id)?)
+}
+
+/// [`read_v5_bundle`], points left compressed
+pub(crate) fn read_v5_bundle_bytes<R: Read>(
+    reader: R,
+    consensus_branch_id: BranchId,
+) -> io::Result<Option<orchard::BundleBytes<Authorized, ZatBalance>>> {
     read_bundle(
         reader,
         bundle_version_for_branch(consensus_branch_id, ValuePool::Orchard),
@@ -229,6 +252,15 @@ pub fn read_v6_bundle<R: Read>(
     consensus_branch_id: BranchId,
     pool: ValuePool,
 ) -> io::Result<Option<orchard::Bundle<Authorized, ZatBalance>>> {
+    decompress_bundle(read_v6_bundle_bytes(reader, consensus_branch_id, pool)?)
+}
+
+/// [`read_v6_bundle`], points left compressed
+pub(crate) fn read_v6_bundle_bytes<R: Read>(
+    reader: R,
+    consensus_branch_id: BranchId,
+    pool: ValuePool,
+) -> io::Result<Option<orchard::BundleBytes<Authorized, ZatBalance>>> {
     read_bundle(reader, bundle_version_for_branch(consensus_branch_id, pool))
 }
 
@@ -294,15 +326,17 @@ pub fn read_note_ciphertext<R: Read>(mut reader: R) -> io::Result<TransmittedNot
     Ok(tnc)
 }
 
-pub fn read_action_without_auth<R: Read>(mut reader: R) -> io::Result<Action<()>> {
-    let cv_net = read_value_commitment(&mut reader)?;
-    let nf_old = read_nullifier(&mut reader)?;
-    let rk = read_verification_key(&mut reader)?;
-    let cmx = read_cmx(&mut reader)?;
-    let encrypted_note = read_note_ciphertext(&mut reader)?;
-
-    Action::from_parts(nf_old, rk, cmx, encrypted_note, cv_net, ())
+pub fn read_action_without_auth<R: Read>(reader: R) -> io::Result<Action<()>> {
+    read_action_bytes_without_auth(reader)?
+        .decompress()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+/// Reads an action, `cv_net`, `rk` & `epk` left compressed (`nf` & `cmx` canonicity checked)
+fn read_action_bytes_without_auth<R: Read>(mut reader: R) -> io::Result<ActionBytes<()>> {
+    let mut bytes = [0u8; ACTION_DESCRIPTION_SIZE];
+    reader.read_exact(&mut bytes)?;
+    ActionBytes::from_bytes(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))
 }
 
 pub fn read_flags<R: Read>(mut reader: R, bundle_version: BundleVersion) -> io::Result<Flags> {
@@ -325,13 +359,13 @@ pub fn read_signature<R: Read, T: SigType>(mut reader: R) -> io::Result<Signatur
     Ok(Signature::from(bytes))
 }
 
-fn write_bundle<W: Write>(
-    bundle: Option<&orchard::Bundle<Authorized, ZatBalance>>,
-    mut writer: W,
-) -> io::Result<()> {
+fn write_bundle<W: Write, B>(bundle: Option<&B>, mut writer: W) -> io::Result<()>
+where
+    B: BundleEncoding<Authorized, ZatBalance>,
+{
     if let Some(bundle) = &bundle {
         Vector::write_nonempty(&mut writer, bundle.actions(), |w, a| {
-            write_action_without_auth(w, a)
+            write_encoded_action_without_auth(w, a)
         })?;
 
         // The flag byte is encoded under the bundle's own `BundleVersion`, which is infallible:
@@ -359,20 +393,20 @@ fn write_bundle<W: Write>(
 ///
 /// The Orchard flag byte is encoded under the bundle's own [`BundleVersion`]; an Orchard bundle
 /// never sets the cross-address bit, so its byte is always valid for the v5 format.
-pub fn write_v5_bundle<W: Write>(
-    bundle: Option<&orchard::Bundle<Authorized, ZatBalance>>,
-    writer: W,
-) -> io::Result<()> {
+pub fn write_v5_bundle<W: Write, B>(bundle: Option<&B>, writer: W) -> io::Result<()>
+where
+    B: BundleEncoding<Authorized, ZatBalance>,
+{
     write_bundle(bundle, writer)
 }
 
 /// Writes an [`orchard::Bundle`] in the v6 transaction format. The bundle's own
 /// [`BundleVersion`] selects the pool (and hence the flag-byte grammar): the Orchard slot uses
 /// [`BundleVersion::orchard_v3`], the Ironwood slot [`BundleVersion::ironwood_v3`].
-pub fn write_v6_bundle<W: Write>(
-    bundle: Option<&orchard::Bundle<Authorized, ZatBalance>>,
-    writer: W,
-) -> io::Result<()> {
+pub fn write_v6_bundle<W: Write, B>(bundle: Option<&B>, writer: W) -> io::Result<()>
+where
+    B: BundleEncoding<Authorized, ZatBalance>,
+{
     if let Some(bundle) = bundle {
         check_v6_bundle_version(bundle.bundle_version())?;
     }
@@ -408,12 +442,20 @@ pub fn write_note_ciphertext<W: Write>(
 }
 
 pub fn write_action_without_auth<W: Write>(
-    mut writer: W,
+    writer: W,
     act: &Action<<Authorized as Authorization>::SpendAuth>,
 ) -> io::Result<()> {
-    write_value_commitment(&mut writer, act.cv_net())?;
+    write_encoded_action_without_auth(writer, act)
+}
+
+/// [`write_action_without_auth`] for an action of the point or bytes tier
+fn write_encoded_action_without_auth<W: Write>(
+    mut writer: W,
+    act: &impl ActionEncoding,
+) -> io::Result<()> {
+    writer.write_all(&act.cv_net_bytes())?;
     write_nullifier(&mut writer, act.nullifier())?;
-    write_verification_key(&mut writer, act.rk())?;
+    writer.write_all(&act.rk_bytes())?;
     write_cmx(&mut writer, act.cmx())?;
     write_note_ciphertext(&mut writer, act.encrypted_note())?;
     Ok(())
