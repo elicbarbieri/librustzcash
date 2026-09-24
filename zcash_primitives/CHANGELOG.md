@@ -21,6 +21,7 @@ workspace.
   - `impl {PartialEq, Eq} for {Bundle, JsDescription, SproutProof}`
 - `zcash_primitives::transaction`:
   - `{CompressedTransaction, CompressedTransactionData, DecompressionError, TransactionParts}`
+  - `impl {PartialEq, Eq} for {CompressedTransaction, CompressedTransactionData}`
   - `Transaction::{compress, parts}`
 
 ### Changed
