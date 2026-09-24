@@ -84,6 +84,8 @@ pub struct Bundle<A: Authorization> {
     pub authorization: A,
 }
 
+impl<A: Authorization + Eq> Eq for Bundle<A> where A::ScriptSig: Eq {}
+
 impl<A: Authorization> Bundle<A> {
     /// Returns `true` if this bundle matches the definition of a coinbase transaction.
     ///
@@ -231,6 +233,8 @@ pub struct TxIn<A: Authorization> {
     #[deprecated(since = "0.4.1", note = "use the sequence() accessor instead.")]
     pub sequence: u32,
 }
+
+impl<A: Authorization + PartialEq> Eq for TxIn<A> where A::ScriptSig: Eq {}
 
 #[allow(deprecated)]
 impl<A: Authorization> TxIn<A> {
