@@ -10,7 +10,9 @@ use ::orchard::{
     ValuePool,
     bundle::{self as orchard, TxVersion as OrchardTxVersion},
 };
-use ::sapling::bundle::{OutputDescription, SpendDescription};
+use ::sapling::bundle::{
+    BundleEncoding as SaplingBundleEncoding, OutputDescriptionEncoding, SpendDescriptionEncoding,
+};
 use ::transparent::bundle::{self as transparent, TxIn, TxOut};
 use zcash_protocol::{
     consensus::{BlockHeight, BranchId},
@@ -156,7 +158,7 @@ pub(crate) fn transparent_outputs_hash<T: Borrow<TxOut>>(vout: &[T]) -> Blake2bH
 /// Then, hash these together personalized by ZCASH_SAPLING_SPENDS_HASH_PERSONALIZATION
 pub(crate) fn hash_sapling_spends<A: sapling::bundle::Authorization>(
     version: TxVersion,
-    shielded_spends: &[SpendDescription<A>],
+    shielded_spends: &[impl SpendDescriptionEncoding<A>],
 ) -> Blake2bHash {
     let mut h = hasher(ZCASH_SAPLING_SPENDS_HASH_PERSONALIZATION);
     if !shielded_spends.is_empty() {
@@ -166,7 +168,7 @@ pub(crate) fn hash_sapling_spends<A: sapling::bundle::Authorization>(
             // we build the hash of nullifiers separately for compact blocks.
             ch.write_all(s_spend.nullifier().as_ref()).unwrap();
 
-            nh.write_all(&s_spend.cv().to_bytes()).unwrap();
+            nh.write_all(&s_spend.cv_bytes()).unwrap();
             let write_anchor = match version {
                 TxVersion::Sprout(_) | TxVersion::V3 | TxVersion::V4 | TxVersion::V5 => true,
                 TxVersion::V6 => false,
@@ -176,7 +178,7 @@ pub(crate) fn hash_sapling_spends<A: sapling::bundle::Authorization>(
             if write_anchor {
                 nh.write_all(&s_spend.anchor().to_repr()).unwrap();
             }
-            nh.write_all(&<[u8; 32]>::from(*s_spend.rk())).unwrap();
+            nh.write_all(&s_spend.rk_bytes()).unwrap();
         }
 
         let compact_digest = ch.finalize();
@@ -195,7 +197,9 @@ pub(crate) fn hash_sapling_spends<A: sapling::bundle::Authorization>(
 /// * \[(cv, enc_ciphertext\[564..\], out_ciphertext, zkproof)*\] personalized with ZCASH_SAPLING_OUTPUTS_NONCOMPACT_HASH_PERSONALIZATION
 ///
 /// Then, hash these together personalized with ZCASH_SAPLING_OUTPUTS_HASH_PERSONALIZATION
-pub(crate) fn hash_sapling_outputs<A>(shielded_outputs: &[OutputDescription<A>]) -> Blake2bHash {
+pub(crate) fn hash_sapling_outputs<A>(
+    shielded_outputs: &[impl OutputDescriptionEncoding<A>],
+) -> Blake2bHash {
     let mut h = hasher(ZCASH_SAPLING_OUTPUTS_HASH_PERSONALIZATION);
     if !shielded_outputs.is_empty() {
         let mut ch = hasher(ZCASH_SAPLING_OUTPUTS_COMPACT_HASH_PERSONALIZATION);
@@ -208,7 +212,7 @@ pub(crate) fn hash_sapling_outputs<A>(shielded_outputs: &[OutputDescription<A>])
 
             mh.write_all(&s_out.enc_ciphertext()[52..564]).unwrap();
 
-            nh.write_all(&s_out.cv().to_bytes()).unwrap();
+            nh.write_all(&s_out.cv_bytes()).unwrap();
             nh.write_all(&s_out.enc_ciphertext()[564..]).unwrap();
             nh.write_all(&s_out.out_ciphertext()[..]).unwrap();
         }
@@ -269,7 +273,7 @@ pub(crate) fn hash_transparent_txid_data(
 /// [ZIP 229](https://zips.z.cash/zip-0229).
 fn hash_sapling_txid_data<A: sapling::bundle::Authorization>(
     version: TxVersion,
-    bundle: &sapling::Bundle<A, ZatBalance>,
+    bundle: &impl SaplingBundleEncoding<A, ZatBalance>,
 ) -> Blake2bHash {
     let mut h = hasher(ZCASH_SAPLING_HASH_PERSONALIZATION);
     if !(bundle.shielded_spends().is_empty() && bundle.shielded_outputs().is_empty()) {
@@ -292,7 +296,7 @@ fn hash_sapling_txid_empty() -> Blake2bHash {
 /// ZIP 244 Sapling txid digest (`None` if no bundle)
 pub(crate) fn sapling_txid_digest<A: sapling::bundle::Authorization>(
     version: TxVersion,
-    bundle: Option<&sapling::Bundle<A, ZatBalance>>,
+    bundle: Option<&impl SaplingBundleEncoding<A, ZatBalance>>,
 ) -> Option<Blake2bHash> {
     bundle.map(|bundle| hash_sapling_txid_data(version, bundle))
 }
@@ -300,25 +304,23 @@ pub(crate) fn sapling_txid_digest<A: sapling::bundle::Authorization>(
 /// ZIP 244 Orchard txid digest (`None` if no bundle)
 pub(crate) fn orchard_txid_digest<A: orchard::Authorization>(
     version: TxVersion,
-    bundle: Option<&orchard::Bundle<A, ZatBalance>>,
+    bundle: Option<&impl orchard::BundleEncoding<A, ZatBalance>>,
 ) -> Option<Blake2bHash> {
     bundle.map(|b| {
         let (_, tx_version) = orchard_commitment_domain(version);
-        b.commitment(tx_version)
+        orchard::commitments::hash_bundle_txid_data(b, tx_version)
             .expect("Orchard bundle flags must be representable in their transaction format")
-            .0
     })
 }
 
 /// ZIP 244 Ironwood txid digest (`None` if no bundle)
 pub(crate) fn ironwood_txid_digest<A: orchard::Authorization>(
-    bundle: Option<&orchard::Bundle<A, ZatBalance>>,
+    bundle: Option<&impl orchard::BundleEncoding<A, ZatBalance>>,
 ) -> Option<Blake2bHash> {
     bundle.map(|b| {
         let (_, tx_version) = ironwood_v6_domain();
-        b.commitment(tx_version)
+        orchard::commitments::hash_bundle_txid_data(b, tx_version)
             .expect("Ironwood bundle flags must be representable")
-            .0
     })
 }
 
@@ -531,7 +533,7 @@ pub(crate) fn transparent_auth_digest(
 /// ZIP 244 Sapling authorizing-data digest
 pub(crate) fn sapling_auth_digest(
     version: TxVersion,
-    sapling_bundle: Option<&sapling::Bundle<sapling::bundle::Authorized, ZatBalance>>,
+    sapling_bundle: Option<&impl SaplingBundleEncoding<sapling::bundle::Authorized, ZatBalance>>,
 ) -> Blake2bHash {
     let mut h = hasher(sapling_auth_personalization(version));
     if let Some(bundle) = sapling_bundle {
@@ -562,7 +564,7 @@ pub(crate) fn sapling_auth_digest(
 /// ZIP 244 authorizing-data digest of an Orchard-protocol bundle, under its pool's domain
 fn orchard_shaped_auth_digest(
     (value_pool, tx_version): (ValuePool, OrchardTxVersion),
-    bundle: Option<&orchard::Bundle<orchard::Authorized, ZatBalance>>,
+    bundle: Option<&impl orchard::BundleEncoding<orchard::Authorized, ZatBalance>>,
 ) -> Blake2bHash {
     bundle.map_or_else(
         || {
@@ -570,9 +572,8 @@ fn orchard_shaped_auth_digest(
                 .expect("empty Orchard-protocol bundle auth commitment is valid for its tx format")
         },
         |b| {
-            b.authorizing_commitment(tx_version)
+            orchard::commitments::hash_bundle_auth_data(b, tx_version)
                 .expect("Orchard-protocol bundle flags must be representable in their tx format")
-                .0
         },
     )
 }
@@ -580,14 +581,14 @@ fn orchard_shaped_auth_digest(
 /// ZIP 244 Orchard authorizing-data digest
 pub(crate) fn orchard_auth_digest(
     version: TxVersion,
-    bundle: Option<&orchard::Bundle<orchard::Authorized, ZatBalance>>,
+    bundle: Option<&impl orchard::BundleEncoding<orchard::Authorized, ZatBalance>>,
 ) -> Blake2bHash {
     orchard_shaped_auth_digest(orchard_commitment_domain(version), bundle)
 }
 
 /// ZIP 244 Ironwood authorizing-data digest
 pub(crate) fn ironwood_auth_digest(
-    bundle: Option<&orchard::Bundle<orchard::Authorized, ZatBalance>>,
+    bundle: Option<&impl orchard::BundleEncoding<orchard::Authorized, ZatBalance>>,
 ) -> Blake2bHash {
     orchard_shaped_auth_digest(ironwood_v6_domain(), bundle)
 }

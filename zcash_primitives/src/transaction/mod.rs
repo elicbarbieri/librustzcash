@@ -9,6 +9,9 @@ pub mod sighash_v6;
 
 pub mod txid;
 
+mod compressed;
+pub use compressed::{CompressedTransaction, CompressedTransactionData, DecompressionError};
+
 #[cfg(any(test, feature = "test-dependencies"))]
 pub mod tests;
 
@@ -32,7 +35,7 @@ use self::{
     components::{orchard as orchard_serialization, sapling as sapling_serialization, sprout},
     txid::{BlockTxCommitmentDigester, TxIdDigester, to_txid},
 };
-use ::transparent::util::sha256d::{HashReader, HashWriter};
+use ::transparent::util::sha256d::HashWriter;
 
 #[cfg(feature = "circuits")]
 use ::sapling::builder as sapling_builder;
@@ -900,14 +903,6 @@ impl TransactionData<Authorized> {
     }
 }
 
-struct V6HeaderFragment {
-    consensus_branch_id: BranchId,
-    lock_time: u32,
-    expiry_height: BlockHeight,
-    #[cfg(all(feature = "zip-233", zcash_unstable = "zip233"))]
-    zip233_amount: Zatoshis,
-}
-
 impl Transaction {
     fn from_data(data: TransactionData<Authorized>) -> io::Result<Self> {
         match data.version {
@@ -958,82 +953,11 @@ impl Transaction {
         self.txid
     }
 
+    /// [`CompressedTransaction::read`] followed by [`CompressedTransaction::decompress`]
     pub fn read<R: Read>(reader: R, consensus_branch_id: BranchId) -> io::Result<Self> {
-        let mut reader = HashReader::new(reader);
-
-        let version = TxVersion::read(&mut reader)?;
-        match version {
-            TxVersion::Sprout(_) | TxVersion::V3 | TxVersion::V4 => {
-                Self::read_v4(reader, version, consensus_branch_id)
-            }
-            TxVersion::V5 => Self::read_v5(reader.into_base_reader(), version),
-            TxVersion::V6 => Self::read_v6(reader.into_base_reader(), version),
-            #[cfg(zcash_unstable = "nutachyon")]
-            TxVersion::V7 => Self::read_v6(reader.into_base_reader(), version),
-        }
-    }
-
-    #[allow(clippy::redundant_closure)]
-    fn read_v4<R: Read>(
-        mut reader: HashReader<R>,
-        version: TxVersion,
-        consensus_branch_id: BranchId,
-    ) -> io::Result<Self> {
-        let transparent_bundle = Self::read_transparent(&mut reader)?;
-
-        let lock_time = reader.read_u32_le()?;
-        let expiry_height: BlockHeight = if version.has_overwinter() {
-            reader.read_u32_le()?.into()
-        } else {
-            0u32.into()
-        };
-
-        let (value_balance, shielded_spends, shielded_outputs) =
-            sapling_serialization::read_v4_components(&mut reader, version.has_sapling())?;
-
-        let sprout_bundle = if version.has_sprout() {
-            sprout::read_bundle(&mut reader, version.has_sapling())?
-        } else {
-            None
-        };
-
-        let binding_sig = if version.has_sapling()
-            && !(shielded_spends.is_empty() && shielded_outputs.is_empty())
-        {
-            let mut sig = [0; 64];
-            reader.read_exact(&mut sig)?;
-            Some(redjubjub::Signature::from(sig))
-        } else {
-            None
-        };
-
-        let mut txid = [0; 32];
-        let hash_bytes = reader.into_hash();
-        txid.copy_from_slice(&hash_bytes);
-
-        Ok(Transaction {
-            txid: TxId::from_bytes(txid),
-            data: TransactionData {
-                version,
-                consensus_branch_id,
-                lock_time,
-                expiry_height,
-                #[cfg(all(feature = "zip-233", zcash_unstable = "zip233"))]
-                zip233_amount: Zatoshis::ZERO,
-                transparent_bundle,
-                sprout_bundle,
-                sapling_bundle: binding_sig.and_then(|binding_sig| {
-                    sapling::Bundle::from_parts(
-                        shielded_spends,
-                        shielded_outputs,
-                        value_balance,
-                        sapling::bundle::Authorized { binding_sig },
-                    )
-                }),
-                orchard_bundle: None,
-                ironwood_bundle: None,
-            },
-        })
+        CompressedTransaction::read(reader, consensus_branch_id)?
+            .decompress()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     fn read_transparent<R: Read>(
@@ -1059,68 +983,6 @@ impl Transaction {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "valueBalance out of range"))
     }
 
-    fn read_v5<R: Read>(mut reader: R, version: TxVersion) -> io::Result<Self> {
-        let (consensus_branch_id, lock_time, expiry_height) =
-            Self::read_header_fragment(&mut reader)?;
-
-        #[cfg(all(feature = "zip-233", zcash_unstable = "zip233"))]
-        let zip233_amount = Zatoshis::ZERO;
-
-        let transparent_bundle = Self::read_transparent(&mut reader)?;
-        let sapling_bundle = sapling_serialization::read_v5_bundle(&mut reader)?;
-        let orchard_bundle =
-            orchard_serialization::read_v5_bundle(&mut reader, consensus_branch_id)?;
-
-        let data = TransactionData {
-            version,
-            consensus_branch_id,
-            lock_time,
-            expiry_height,
-            #[cfg(all(feature = "zip-233", zcash_unstable = "zip233"))]
-            zip233_amount,
-            transparent_bundle,
-            sprout_bundle: None,
-            sapling_bundle,
-            orchard_bundle,
-            ironwood_bundle: None,
-        };
-
-        Ok(Self::from_data_v5(data))
-    }
-
-    fn read_v6<R: Read>(mut reader: R, version: TxVersion) -> io::Result<Self> {
-        let header_fragment = Self::read_v6_header_fragment(&mut reader)?;
-
-        let transparent_bundle = Self::read_transparent(&mut reader)?;
-        let sapling_bundle = sapling_serialization::read_v5_bundle(&mut reader)?;
-        let orchard_bundle = orchard_serialization::read_v6_bundle(
-            &mut reader,
-            header_fragment.consensus_branch_id,
-            orchard::ValuePool::Orchard,
-        )?;
-        let ironwood_bundle = orchard_serialization::read_v6_bundle(
-            &mut reader,
-            header_fragment.consensus_branch_id,
-            orchard::ValuePool::Ironwood,
-        )?;
-
-        let data = TransactionData {
-            version,
-            consensus_branch_id: header_fragment.consensus_branch_id,
-            lock_time: header_fragment.lock_time,
-            expiry_height: header_fragment.expiry_height,
-            #[cfg(all(feature = "zip-233", zcash_unstable = "zip233"))]
-            zip233_amount: header_fragment.zip233_amount,
-            transparent_bundle,
-            sprout_bundle: None,
-            sapling_bundle,
-            orchard_bundle,
-            ironwood_bundle,
-        };
-
-        Ok(Self::from_data_v6(data))
-    }
-
     /// Utility function for reading header data common to v5 and later transactions.
     fn read_header_fragment<R: Read>(mut reader: R) -> io::Result<(BranchId, u32, BlockHeight)> {
         let consensus_branch_id = reader.read_u32_le().and_then(|value| {
@@ -1142,19 +1004,6 @@ impl Transaction {
         Ok((consensus_branch_id, lock_time, expiry_height))
     }
 
-    fn read_v6_header_fragment<R: Read>(mut reader: R) -> io::Result<V6HeaderFragment> {
-        let (consensus_branch_id, lock_time, expiry_height) =
-            Self::read_header_fragment(&mut reader)?;
-
-        Ok(V6HeaderFragment {
-            consensus_branch_id,
-            lock_time,
-            expiry_height,
-            #[cfg(all(feature = "zip-233", zcash_unstable = "zip233"))]
-            zip233_amount: Zatoshis::ZERO,
-        })
-    }
-
     #[cfg(feature = "temporary-zcashd")]
     pub fn temporary_zcashd_read_v5_sapling<R: Read>(
         reader: R,
@@ -1162,6 +1011,179 @@ impl Transaction {
         sapling_serialization::read_v5_bundle(reader)
     }
 
+    pub fn write<W: Write>(&self, writer: W) -> io::Result<()> {
+        self.parts().write(writer)
+    }
+
+    pub fn write_v4<W: Write>(&self, writer: W) -> io::Result<()> {
+        self.parts().write_v4(writer)
+    }
+
+    pub fn write_transparent<W: Write>(&self, writer: W) -> io::Result<()> {
+        self.parts().write_transparent(writer)
+    }
+
+    pub fn write_v5<W: Write>(&self, writer: W) -> io::Result<()> {
+        self.parts().write_v5(writer)
+    }
+
+    pub fn write_v6<W: Write>(&self, writer: W) -> io::Result<()> {
+        self.parts().write_v6(writer)
+    }
+
+    pub fn write_v5_header<W: Write>(&self, writer: W) -> io::Result<()> {
+        self.parts().write_v5_header(writer)
+    }
+
+    pub fn write_v6_header<W: Write>(&self, writer: W) -> io::Result<()> {
+        self.parts().write_v6_header(writer)
+    }
+
+    #[cfg(feature = "temporary-zcashd")]
+    pub fn temporary_zcashd_write_v5_sapling<W: Write>(
+        sapling_bundle: Option<&sapling::Bundle<sapling::bundle::Authorized, ZatBalance>>,
+        writer: W,
+    ) -> io::Result<()> {
+        sapling_serialization::write_v5_bundle(writer, sapling_bundle)
+    }
+
+    pub fn write_v5_sapling<W: Write>(&self, writer: W) -> io::Result<()> {
+        sapling_serialization::write_v5_bundle(writer, self.sapling_bundle.as_ref())
+    }
+
+    /// Borrows the fields as a [`TransactionParts`], for encoding & digesting
+    pub fn parts(
+        &self,
+    ) -> TransactionParts<
+        '_,
+        sapling::Bundle<sapling::bundle::Authorized, ZatBalance>,
+        orchard::Bundle<orchard::bundle::Authorized, ZatBalance>,
+    > {
+        TransactionParts {
+            version: self.version,
+            consensus_branch_id: self.consensus_branch_id,
+            lock_time: self.lock_time,
+            expiry_height: self.expiry_height,
+            transparent_bundle: self.transparent_bundle.as_ref(),
+            sprout_bundle: self.sprout_bundle.as_ref(),
+            sapling_bundle: self.sapling_bundle.as_ref(),
+            orchard_bundle: self.orchard_bundle.as_ref(),
+            ironwood_bundle: self.ironwood_bundle.as_ref(),
+        }
+    }
+
+    // TODO: should this be moved to `from_data` and stored?
+    pub fn auth_commitment(&self) -> Blake2bHash {
+        self.data.digest(BlockTxCommitmentDigester)
+    }
+}
+
+/// Borrowed transaction fields, over point-tier, bytes-tier or caller-owned bundles
+///
+/// Encodes & computes the ZIP 244 digests from each bundle's `BundleEncoding` (no decompression)
+pub struct TransactionParts<'a, S, O> {
+    pub(crate) version: TxVersion,
+    pub(crate) consensus_branch_id: BranchId,
+    pub(crate) lock_time: u32,
+    pub(crate) expiry_height: BlockHeight,
+    pub(crate) transparent_bundle: Option<&'a transparent::Bundle<transparent::Authorized>>,
+    pub(crate) sprout_bundle: Option<&'a sprout::Bundle>,
+    pub(crate) sapling_bundle: Option<&'a S>,
+    pub(crate) orchard_bundle: Option<&'a O>,
+    pub(crate) ironwood_bundle: Option<&'a O>,
+}
+
+impl<'a, S, O> TransactionParts<'a, S, O> {
+    /// Borrows a caller's own storage of a transaction's fields
+    ///
+    /// - `version` selects the encoding (Sprout written by v2–v4, Ironwood by v6+)
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        version: TxVersion,
+        consensus_branch_id: BranchId,
+        lock_time: u32,
+        expiry_height: BlockHeight,
+        transparent_bundle: Option<&'a transparent::Bundle<transparent::Authorized>>,
+        sprout_bundle: Option<&'a sprout::Bundle>,
+        sapling_bundle: Option<&'a S>,
+        orchard_bundle: Option<&'a O>,
+        ironwood_bundle: Option<&'a O>,
+    ) -> Self {
+        TransactionParts {
+            version,
+            consensus_branch_id,
+            lock_time,
+            expiry_height,
+            transparent_bundle,
+            sprout_bundle,
+            sapling_bundle,
+            orchard_bundle,
+            ironwood_bundle,
+        }
+    }
+}
+
+impl<S, O> TransactionParts<'_, S, O>
+where
+    S: sapling::bundle::BundleEncoding<sapling::bundle::Authorized, ZatBalance>,
+    O: orchard::bundle::BundleEncoding<orchard::bundle::Authorized, ZatBalance>,
+{
+    /// Computes the txid
+    ///
+    /// - v1–v4: hash of the encoding (fails when [`Self::write`] does)
+    /// - v5+: ZIP 244 txid (infallible)
+    pub fn txid(&self) -> io::Result<TxId> {
+        match self.version {
+            TxVersion::Sprout(_) | TxVersion::V3 | TxVersion::V4 => {
+                let mut writer = HashWriter::default();
+                self.write_v4(&mut writer)?;
+                Ok(TxId::from_bytes(writer.into_hash().into()))
+            }
+            TxVersion::V5 | TxVersion::V6 => Ok(to_txid(
+                self.version,
+                self.consensus_branch_id,
+                &self.txid_digests(),
+            )),
+            #[cfg(zcash_unstable = "nutachyon")]
+            TxVersion::V7 => Ok(to_txid(
+                self.version,
+                self.consensus_branch_id,
+                &self.txid_digests(),
+            )),
+        }
+    }
+
+    /// ZIP 244 txid digests
+    fn txid_digests(&self) -> TxDigests<Blake2bHash> {
+        TxDigests {
+            header_digest: txid::hash_header_txid_data(
+                self.version,
+                self.consensus_branch_id,
+                self.lock_time,
+                self.expiry_height,
+            ),
+            transparent_digests: self.transparent_bundle.map(txid::transparent_digests),
+            sapling_digest: txid::sapling_txid_digest(self.version, self.sapling_bundle),
+            orchard_digest: txid::orchard_txid_digest(self.version, self.orchard_bundle),
+            ironwood_digest: txid::ironwood_txid_digest(self.ironwood_bundle),
+        }
+    }
+
+    /// Returns the ZIP 244 authorizing-data commitment
+    pub fn auth_commitment(&self) -> Blake2bHash {
+        txid::combine_auth_digests(
+            self.version,
+            self.consensus_branch_id,
+            txid::transparent_auth_digest(self.transparent_bundle),
+            txid::sapling_auth_digest(self.version, self.sapling_bundle),
+            txid::orchard_auth_digest(self.version, self.orchard_bundle),
+            txid::ironwood_auth_digest(self.ironwood_bundle),
+        )
+    }
+
+    /// Writes the canonical encoding for `version`
+    ///
+    /// Fails if a bundle is set that `version` cannot carry (e.g. Orchard on v4)
     pub fn write<W: Write>(&self, writer: W) -> io::Result<()> {
         match self.version {
             TxVersion::Sprout(_) | TxVersion::V3 | TxVersion::V4 => self.write_v4(writer),
@@ -1172,7 +1194,7 @@ impl Transaction {
         }
     }
 
-    pub fn write_v4<W: Write>(&self, mut writer: W) -> io::Result<()> {
+    fn write_v4<W: Write>(&self, mut writer: W) -> io::Result<()> {
         if self.orchard_bundle.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -1190,16 +1212,16 @@ impl Transaction {
 
         sapling_serialization::write_v4_components(
             &mut writer,
-            self.sapling_bundle.as_ref(),
+            self.sapling_bundle,
             self.version.has_sapling(),
         )?;
 
         if self.version.has_sprout() {
-            sprout::write_bundle(&mut writer, self.sprout_bundle.as_ref())?;
+            sprout::write_bundle(&mut writer, self.sprout_bundle)?;
         }
 
         if self.version.has_sapling()
-            && let Some(bundle) = self.sapling_bundle.as_ref()
+            && let Some(bundle) = self.sapling_bundle
         {
             writer.write_all(&<[u8; 64]>::from(bundle.authorization().binding_sig))?;
         }
@@ -1207,8 +1229,8 @@ impl Transaction {
         Ok(())
     }
 
-    pub fn write_transparent<W: Write>(&self, mut writer: W) -> io::Result<()> {
-        if let Some(bundle) = &self.transparent_bundle {
+    fn write_transparent<W: Write>(&self, mut writer: W) -> io::Result<()> {
+        if let Some(bundle) = self.transparent_bundle {
             Vector::write(&mut writer, &bundle.vin, |w, e| e.write(w))?;
             Vector::write(&mut writer, &bundle.vout, |w, e| e.write(w))?;
         } else {
@@ -1219,7 +1241,7 @@ impl Transaction {
         Ok(())
     }
 
-    pub fn write_v5<W: Write>(&self, mut writer: W) -> io::Result<()> {
+    fn write_v5<W: Write>(&self, mut writer: W) -> io::Result<()> {
         if self.sprout_bundle.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -1228,13 +1250,13 @@ impl Transaction {
         }
         self.write_v5_header(&mut writer)?;
         self.write_transparent(&mut writer)?;
-        self.write_v5_sapling(&mut writer)?;
-        orchard_serialization::write_v5_bundle(self.orchard_bundle.as_ref(), &mut writer)?;
+        sapling_serialization::write_v5_bundle(&mut writer, self.sapling_bundle)?;
+        orchard_serialization::write_v5_bundle(self.orchard_bundle, &mut writer)?;
 
         Ok(())
     }
 
-    pub fn write_v6<W: Write>(&self, mut writer: W) -> io::Result<()> {
+    fn write_v6<W: Write>(&self, mut writer: W) -> io::Result<()> {
         if self.sprout_bundle.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -1244,14 +1266,14 @@ impl Transaction {
         self.write_v6_header(&mut writer)?;
 
         self.write_transparent(&mut writer)?;
-        self.write_v5_sapling(&mut writer)?;
-        orchard_serialization::write_v6_bundle(self.orchard_bundle.as_ref(), &mut writer)?;
-        orchard_serialization::write_v6_bundle(self.ironwood_bundle.as_ref(), &mut writer)?;
+        sapling_serialization::write_v5_bundle(&mut writer, self.sapling_bundle)?;
+        orchard_serialization::write_v6_bundle(self.orchard_bundle, &mut writer)?;
+        orchard_serialization::write_v6_bundle(self.ironwood_bundle, &mut writer)?;
 
         Ok(())
     }
 
-    pub fn write_v5_header<W: Write>(&self, mut writer: W) -> io::Result<()> {
+    fn write_v5_header<W: Write>(&self, mut writer: W) -> io::Result<()> {
         self.version.write(&mut writer)?;
         writer.write_u32_le(u32::from(self.consensus_branch_id))?;
         writer.write_u32_le(self.lock_time)?;
@@ -1259,30 +1281,13 @@ impl Transaction {
         Ok(())
     }
 
-    pub fn write_v6_header<W: Write>(&self, mut writer: W) -> io::Result<()> {
+    fn write_v6_header<W: Write>(&self, mut writer: W) -> io::Result<()> {
         self.version.write(&mut writer)?;
         writer.write_u32_le(u32::from(self.consensus_branch_id))?;
         writer.write_u32_le(self.lock_time)?;
         writer.write_u32_le(u32::from(self.expiry_height))?;
 
         Ok(())
-    }
-
-    #[cfg(feature = "temporary-zcashd")]
-    pub fn temporary_zcashd_write_v5_sapling<W: Write>(
-        sapling_bundle: Option<&sapling::Bundle<sapling::bundle::Authorized, ZatBalance>>,
-        writer: W,
-    ) -> io::Result<()> {
-        sapling_serialization::write_v5_bundle(writer, sapling_bundle)
-    }
-
-    pub fn write_v5_sapling<W: Write>(&self, writer: W) -> io::Result<()> {
-        sapling_serialization::write_v5_bundle(writer, self.sapling_bundle.as_ref())
-    }
-
-    // TODO: should this be moved to `from_data` and stored?
-    pub fn auth_commitment(&self) -> Blake2bHash {
-        self.data.digest(BlockTxCommitmentDigester)
     }
 }
 

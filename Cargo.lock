@@ -1232,7 +1232,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1b84d32b18d9a256d81e4fec2e4cfd0ab6dde5e5ff49be1713ae0adbd0060c2"
 dependencies = [
  "heck",
- "indexmap 2.12.0",
+ "indexmap 1.9.3",
  "itertools 0.13.0",
  "proc-macro-crate",
  "proc-macro2",
@@ -1250,7 +1250,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd5f2b7218a51c827a11d22d1439b598121fac94bf9b99452e4afffe512d78c9"
 dependencies = [
  "heck",
- "indexmap 2.12.0",
+ "indexmap 1.9.3",
  "itertools 0.14.0",
  "proc-macro-crate",
  "proc-macro2",
@@ -1391,7 +1391,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.0",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1645,7 +1645,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2424,7 +2424,7 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 [[package]]
 name = "incrementalmerkletree"
 version = "0.8.2"
-source = "git+https://github.com/zcash/incrementalmerkletree.git?rev=af3cc3ce54daad90935c657e5d2ded3149c19a1d#af3cc3ce54daad90935c657e5d2ded3149c19a1d"
+source = "git+https://github.com/elicbarbieri/incrementalmerkletree.git?rev=65f28bfadc2dd0ee77a4c303d567fa87ddc5ea19#65f28bfadc2dd0ee77a4c303d567fa87ddc5ea19"
 dependencies = [
  "either",
  "proptest",
@@ -2435,7 +2435,7 @@ dependencies = [
 [[package]]
 name = "incrementalmerkletree-testing"
 version = "0.3.0"
-source = "git+https://github.com/zcash/incrementalmerkletree.git?rev=af3cc3ce54daad90935c657e5d2ded3149c19a1d#af3cc3ce54daad90935c657e5d2ded3149c19a1d"
+source = "git+https://github.com/elicbarbieri/incrementalmerkletree.git?rev=65f28bfadc2dd0ee77a4c303d567fa87ddc5ea19#65f28bfadc2dd0ee77a4c303d567fa87ddc5ea19"
 dependencies = [
  "incrementalmerkletree",
  "proptest",
@@ -2930,7 +2930,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3101,7 +3101,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "orchard"
 version = "0.15.5"
-source = "git+https://github.com/zcash/orchard.git?rev=3cc0781df0afa3b069bd02264b479e54c74fc3d8#3cc0781df0afa3b069bd02264b479e54c74fc3d8"
+source = "git+https://github.com/elicbarbieri/orchard.git?rev=8c8e8ae802e93c786ca858c205b1e1012609a2e8#8c8e8ae802e93c786ca858c205b1e1012609a2e8"
 dependencies = [
  "aes",
  "bitvec",
@@ -3123,6 +3123,7 @@ dependencies = [
  "proptest",
  "rand 0.10.3",
  "rand_core 0.10.1",
+ "rayon",
  "reddsa",
  "serde",
  "sinsemilla",
@@ -4187,7 +4188,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4302,7 +4303,7 @@ dependencies = [
 [[package]]
 name = "sapling-crypto"
 version = "0.7.0"
-source = "git+https://github.com/zcash/sapling-crypto.git?rev=cc5353d3590b8defc5c4333d1528bc123b7ab0f8#cc5353d3590b8defc5c4333d1528bc123b7ab0f8"
+source = "git+https://github.com/elicbarbieri/sapling-crypto.git?rev=9dd80432983fc183d628f53ab7f9852ddcc9dada#9dd80432983fc183d628f53ab7f9852ddcc9dada"
 dependencies = [
  "aes",
  "bellman",
@@ -4325,6 +4326,7 @@ dependencies = [
  "proptest",
  "rand 0.10.3",
  "rand_core 0.10.1",
+ "rayon",
  "redjubjub",
  "subtle",
  "tracing",
@@ -4632,7 +4634,7 @@ dependencies = [
 [[package]]
 name = "shardtree"
 version = "0.7.1"
-source = "git+https://github.com/zcash/incrementalmerkletree.git?rev=af3cc3ce54daad90935c657e5d2ded3149c19a1d#af3cc3ce54daad90935c657e5d2ded3149c19a1d"
+source = "git+https://github.com/elicbarbieri/incrementalmerkletree.git?rev=65f28bfadc2dd0ee77a4c303d567fa87ddc5ea19#65f28bfadc2dd0ee77a4c303d567fa87ddc5ea19"
 dependencies = [
  "assert_matches",
  "bitflags 2.9.0",
