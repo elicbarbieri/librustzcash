@@ -27,14 +27,14 @@ type OrchardBytes = orchard::BundleBytes<orchard::bundle::Authorized, ZatBalance
 /// potentially non-canonical encodings.
 ///
 /// [`CompressedTransaction::decompress`] must be used to decompress & check point rules
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompressedTransaction {
     txid: TxId,
     data: CompressedTransactionData,
 }
 
 /// The fields of a [`CompressedTransaction`]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompressedTransactionData {
     version: TxVersion,
     consensus_branch_id: BranchId,
