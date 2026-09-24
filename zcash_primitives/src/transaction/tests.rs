@@ -3,7 +3,8 @@ use proptest::prelude::*;
 #[cfg(test)]
 use {
     crate::transaction::{
-        Authorization, Transaction, TransactionData, TransactionDigest, TxDigests, TxIn, TxVersion,
+        Authorization, CompressedTransaction, CompressedTransactionData, DecompressionError,
+        Transaction, TransactionData, TransactionDigest, TxDigests, TxIn, TxVersion,
         sighash::SignableInput,
         sighash_v4::v4_signature_hash,
         sighash_v5::v5_signature_hash,
@@ -976,6 +977,61 @@ fn check_roundtrip(tx: Transaction) -> Result<(), TestCaseError> {
     tx.write(&mut txn_bytes).unwrap();
     let txo = Transaction::read(&txn_bytes[..], tx.consensus_branch_id).unwrap();
 
+    // Bytes tier: same txid & auth commitment, byte-identical encoding, and `decompress`
+    // yields what `Transaction::read` does
+    let compressed = CompressedTransaction::read(&txn_bytes[..], tx.consensus_branch_id).unwrap();
+    // Point-tier digests (recomputed after decompressing) = bytes-tier digests
+    let refrozen = compressed
+        .clone()
+        .decompress()
+        .unwrap()
+        .into_data()
+        .freeze()
+        .unwrap();
+    prop_assert_eq!(compressed.txid(), refrozen.txid());
+    prop_assert_eq!(compressed.auth_commitment(), refrozen.auth_commitment());
+    // Caller-held bundles: `from_parts` + `freeze` recomputes the same identity
+    let rebuilt = match compressed.version() {
+        TxVersion::V6 => CompressedTransactionData::from_parts_v6(
+            compressed.consensus_branch_id(),
+            compressed.lock_time(),
+            compressed.expiry_height(),
+            compressed.transparent_bundle().cloned(),
+            compressed.sapling_bundle().cloned(),
+            compressed.orchard_bundle().cloned(),
+            compressed.ironwood_bundle().cloned(),
+        ),
+        version => CompressedTransactionData::from_parts(
+            version,
+            compressed.consensus_branch_id(),
+            compressed.lock_time(),
+            compressed.expiry_height(),
+            compressed.transparent_bundle().cloned(),
+            compressed.sprout_bundle().cloned(),
+            compressed.sapling_bundle().cloned(),
+            compressed.orchard_bundle().cloned(),
+        ),
+    }
+    .freeze()
+    .unwrap();
+    prop_assert_eq!(rebuilt.txid(), compressed.txid());
+    prop_assert_eq!(rebuilt.auth_commitment(), compressed.auth_commitment());
+    let mut compressed_bytes = vec![];
+    compressed.write(&mut compressed_bytes).unwrap();
+    prop_assert_eq!(&compressed_bytes, &txn_bytes);
+    let decompressed = compressed.decompress().unwrap();
+    prop_assert_eq!(decompressed.txid(), txo.txid());
+    let mut decompressed_bytes = vec![];
+    decompressed.write(&mut decompressed_bytes).unwrap();
+    prop_assert_eq!(&decompressed_bytes, &txn_bytes);
+    // `compress` inverts `decompress`: same identity, byte-identical encoding
+    let recompressed = decompressed.compress();
+    prop_assert_eq!(recompressed.txid(), txo.txid());
+    prop_assert_eq!(recompressed.auth_commitment(), refrozen.auth_commitment());
+    let mut recompressed_bytes = vec![];
+    recompressed.write(&mut recompressed_bytes).unwrap();
+    prop_assert_eq!(&recompressed_bytes, &txn_bytes);
+
     prop_assert_eq!(tx.version, txo.version);
     prop_assert_eq!(tx.lock_time, txo.lock_time);
     prop_assert_eq!(
@@ -1165,6 +1221,44 @@ impl Authorization for TestUnauthorized {
     type OrchardAuth = orchard::bundle::Authorized;
 }
 
+/// Non-canonical Sapling `cv`: parses (no curve arithmetic), fails at `decompress`, and
+/// `Transaction::read` still rejects it
+#[test]
+fn non_canonical_sapling_cv_is_rejected_on_decompress_not_parse() {
+    let tv = self::data::zip_0244::make_test_vectors()
+        .into_iter()
+        .find(|tv| {
+            Transaction::read(&tv.tx[..], BranchId::Nu5)
+                .unwrap()
+                .sapling_bundle()
+                .is_some_and(|b| !b.shielded_spends().is_empty())
+        })
+        .expect("a ZIP-244 vector has a Sapling spend");
+    let tx = Transaction::read(&tv.tx[..], BranchId::Nu5).unwrap();
+    let spends = tx.sapling_bundle().unwrap().shielded_spends();
+
+    // v5 layout: header ‖ transparent ‖ CompactSize(nSpendsSapling) ‖ spend[0].cv ‖ ..
+    let mut prefix = vec![];
+    tx.write_v5_header(&mut prefix).unwrap();
+    tx.write_transparent(&mut prefix).unwrap();
+    zcash_encoding::CompactSize::write(&mut prefix, spends.len()).unwrap();
+    let cv = spends[0].cv().to_bytes();
+    let cv_range = prefix.len()..prefix.len() + cv.len();
+    assert_eq!(&tv.tx[cv_range.clone()], &cv[..], "offset of spend[0].cv");
+
+    // All-ones: y >= p, not a canonical Jubjub encoding
+    let mut bytes = tv.tx.clone();
+    bytes[cv_range].fill(0xff);
+
+    let compressed = CompressedTransaction::read(&bytes[..], BranchId::Nu5)
+        .expect("parse does no curve arithmetic");
+    assert!(matches!(
+        compressed.decompress(),
+        Err(DecompressionError::Sapling(_))
+    ));
+    assert!(Transaction::read(&bytes[..], BranchId::Nu5).is_err());
+}
+
 #[test]
 fn zip_0244() {
     fn to_test_txdata(
@@ -1174,6 +1268,14 @@ fn zip_0244() {
 
         assert_eq!(tx.txid.as_ref(), &tv.txid);
         assert_eq!(tx.auth_commitment().as_ref(), &tv.auth_digest);
+
+        // Digests from byte encodings alone (no point decompressed) match the vectors
+        let compressed = CompressedTransaction::read(&tv.tx[..], BranchId::Nu5).unwrap();
+        assert_eq!(compressed.txid().as_ref(), &tv.txid);
+        assert_eq!(compressed.auth_commitment().as_ref(), &tv.auth_digest);
+        let mut reencoded = vec![];
+        compressed.write(&mut reencoded).unwrap();
+        assert_eq!(reencoded, tv.tx);
 
         let txdata = tx.deref();
 
