@@ -10,6 +10,9 @@ workspace.
 
 ## [Unreleased]
 
+### Added
+- `impl Eq for {bundle::Bundle, bundle::TxIn}`, where the authorization's `ScriptSig` is `Eq`
+
 ## [0.11.0] - 2026-10-21
 
 ### Added
