@@ -11,6 +11,7 @@ workspace.
 ## [Unreleased]
 
 ### Added
+- `impl Eq for {bundle::Bundle, bundle::TxIn}`, where the authorization's `ScriptSig` is `Eq`
 - `zcash_transparent::keys::ShieldingOvks`
 - `zcash_transparent::sighash::SighashPolicy`
 - `zcash_transparent::pczt`:
