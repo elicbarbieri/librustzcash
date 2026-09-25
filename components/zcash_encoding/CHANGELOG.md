@@ -7,6 +7,12 @@ and this library adheres to Rust's notion of
 
 ## [Unreleased]
 
+### Added
+- `zcash_encoding::Vector::{read_bytes, write_bytes}`: the `Vector` encoding of
+  a `u8` vector, read and written in bulk rather than through a per-element
+  closure. `read_bytes` grows its buffer at most 16 KiB past the bytes actually
+  read, so a malformed length prefix cannot force a large allocation.
+
 ## [0.5.0] - 2026-07-24
 
 ### Added

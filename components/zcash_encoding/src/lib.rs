@@ -25,6 +25,12 @@ pub mod testing;
 /// The maximum allowed value representable as a `[CompactSize]`
 pub const MAX_COMPACT_SIZE: u32 = 0x02000000;
 
+/// Buffer growth per [`Vector::read_bytes`] read
+///
+/// - bounds the allocation an untrusted length prefix can force: ≤ one step past the bytes read
+/// - ≥ the 10 000-byte consensus script limit, so a script is one read
+const READ_BYTES_STEP: usize = 16 * 1024;
+
 /// Namespace for functions for compact encoding of integers.
 ///
 /// This codec requires integers to be in the range `0x0..=0x02000000`, for compatibility
@@ -232,6 +238,24 @@ impl Vector {
         items.try_for_each(|e| func(&mut writer, e))
     }
 
+    /// Bytes as written by [`Vector::write_bytes`] (= [`Vector::write`] of `u8`s), read in bulk
+    pub fn read_bytes<R: Read>(mut reader: R) -> io::Result<Vec<u8>> {
+        let len: usize = CompactSize::read_t(&mut reader)?;
+        let mut bytes = Vec::new();
+        while bytes.len() < len {
+            let filled = bytes.len();
+            bytes.resize(len.min(filled + READ_BYTES_STEP), 0);
+            reader.read_exact(&mut bytes[filled..])?;
+        }
+        Ok(bytes)
+    }
+
+    /// `bytes` behind its [`CompactSize`] length (= [`Vector::write`] of `u8`s), one write
+    pub fn write_bytes<W: Write>(mut writer: W, bytes: &[u8]) -> io::Result<()> {
+        CompactSize::write(&mut writer, bytes.len())?;
+        writer.write_all(bytes)
+    }
+
     /// Returns the serialized size of a vector of `u8` as written by `[Vector::write]`.
     pub fn serialized_size_of_u8_vec(vec: &[u8]) -> usize {
         let length = vec.len();
@@ -379,6 +403,28 @@ mod tests {
             let decoded = ReverseHex::decode(&encoded);
             prop_assert_eq!(decoded, Some(bytes));
         }
+
+        /// Any length, across the read-step boundary: the bulk codec = the per-byte one, and a
+        /// stream cut short anywhere after its length prefix is `UnexpectedEof`
+        #[test]
+        fn byte_vectors_match_the_per_byte_codec_and_refuse_truncation(
+            value in prop::collection::vec(any::<u8>(), 0..3 * READ_BYTES_STEP),
+            cut in any::<prop::sample::Index>(),
+        ) {
+            let mut per_byte = vec![];
+            Vector::write(&mut per_byte, &value, |w, e| w.write_all(&[*e])).unwrap();
+            let mut bulk = vec![];
+            Vector::write_bytes(&mut bulk, &value).unwrap();
+            prop_assert_eq!(&bulk, &per_byte);
+            prop_assert_eq!(Vector::read_bytes(&bulk[..]).unwrap(), value.clone());
+
+            let prefix = CompactSize::serialized_size(value.len());
+            if !value.is_empty() {
+                let short = prefix + cut.index(value.len());
+                let err = Vector::read_bytes(&bulk[..short]).unwrap_err();
+                prop_assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+            }
+        }
     }
 
     #[test]
@@ -472,6 +518,14 @@ mod tests {
                     Ok(v) => assert_eq!(v, $value),
                     Err(e) => panic!("Unexpected error: {:?}", e),
                 }
+                let mut bulk = vec![];
+                Vector::write_bytes(&mut bulk, &$value).unwrap();
+                assert_eq!(
+                    &bulk[..],
+                    &$expected[..],
+                    "write_bytes = the per-byte encoding"
+                );
+                assert_eq!(Vector::read_bytes(&data[..]).unwrap(), $value);
             };
         }
 
@@ -488,6 +542,15 @@ mod tests {
             expected[2] = 1;
 
             eval!(vec![7; 260], expected);
+        }
+
+        {
+            // declared length far past the data: fails at the data, one read step buffered
+            let mut oversized = vec![];
+            CompactSize::write(&mut oversized, MAX_COMPACT_SIZE as usize).unwrap();
+            oversized.push(0);
+            let err = Vector::read_bytes(&oversized[..]).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
         }
     }
 
