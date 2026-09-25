@@ -22,6 +22,7 @@ workspace.
 - `zcash_primitives::transaction::builder::Builder::{build, build_for_pczt}`
   (and `mock_build`, behind `test-dependencies`) now require their `rng`
   argument to implement `rand_core::Rng` in place of `rand_core::RngCore`.
+- Migrated to `zcash_encoding 0.5`.
 - `BranchId::Nu7` is available without a custom compiler configuration, with
   consensus branch ID `0x77190AD9`.
 
