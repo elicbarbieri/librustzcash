@@ -25,6 +25,7 @@ workspace.
 - `zcash_transparent::zip48::P2shViewingKeyError`
 
 ### Changed
+- Migrated to `zcash_encoding 0.5`.
 - `zcash_transparent::keys::AccountPubKey::ovks_for_shielding` now returns
   `ShieldingOvks` instead of `(InternalOvk, ExternalOvk)`. Read each key from
   `ShieldingOvks::internal` or `ShieldingOvks::external` instead of by tuple

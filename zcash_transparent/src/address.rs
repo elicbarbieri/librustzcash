@@ -60,16 +60,12 @@ impl PartialEq for Script {
 impl Eq for Script {}
 
 impl Script {
-    pub fn read<R: Read>(mut reader: R) -> io::Result<Self> {
-        let script = Vector::read(&mut reader, |r| {
-            let mut bytes = [0; 1];
-            r.read_exact(&mut bytes).map(|_| bytes[0])
-        })?;
-        Ok(Script(script::Code(script)))
+    pub fn read<R: Read>(reader: R) -> io::Result<Self> {
+        Vector::read_bytes(reader).map(|script| Script(script::Code(script)))
     }
 
-    pub fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
-        Vector::write(&mut writer, &self.0.0, |w, e| w.write_all(&[*e]))
+    pub fn write<W: Write>(&self, writer: W) -> io::Result<()> {
+        Vector::write_bytes(writer, &self.0.0)
     }
 
     /// Returns the length of this script as encoded (including the initial CompactSize).
