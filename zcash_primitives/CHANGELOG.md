@@ -16,6 +16,7 @@ workspace.
   uses the V6 transaction body and digest structure.
 
 ### Changed
+- Migrated to `zcash_encoding 0.5`.
 - `BranchId::Nu7` is available without a custom compiler configuration, with
   consensus branch ID `0x77190AD9`.
 
