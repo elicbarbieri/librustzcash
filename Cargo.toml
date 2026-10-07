@@ -236,5 +236,5 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 # zcash/sapling-crypto#204 + batched tree hashing (`Hashable::combine_pairs`); drop once released
 [patch.crates-io]
 incrementalmerkletree = { git = "https://github.com/elicbarbieri/incrementalmerkletree.git", rev = "d5e07689456e0be0154934aa39d347a9e5f18765" }
-orchard = { git = "https://github.com/elicbarbieri/orchard.git", rev = "b1d5b69cddbb205edc419a79ec3fa4c6a9c14a6d" }
+orchard = { git = "https://github.com/elicbarbieri/orchard.git", rev = "426f5c77a7e1eab302f1088db6ac7679865d7ee4" }
 sapling-crypto = { git = "https://github.com/elicbarbieri/sapling-crypto.git", rev = "3c14da616116271fdf48ec032bbf31195e5f6c7f" }
