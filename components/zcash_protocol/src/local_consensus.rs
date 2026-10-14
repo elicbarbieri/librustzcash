@@ -1,4 +1,4 @@
-use crate::consensus::{BlockHeight, NetworkType, NetworkUpgrade, Parameters};
+use crate::consensus::{BlockHeight, NetworkType, NetworkUpgrade, Parameters, UPGRADES_IN_ORDER};
 
 /// a `LocalNetwork` setup should define the activation heights
 /// of network upgrades. `None` is considered as "not activated"
@@ -55,6 +55,48 @@ pub struct LocalNetwork {
     pub nu_tachyon: Option<BlockHeight>,
 }
 
+impl LocalNetwork {
+    /// Constructs a `LocalNetwork` that activates each network upgrade at `height(upgrade)`, or
+    /// never if that is `None`.
+    ///
+    /// Sequential network upgrades may share an activation height, but they may not activate out
+    /// of the order given by [`UPGRADES_IN_ORDER`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if a network upgrade activates below a network upgrade that precedes it in
+    /// [`UPGRADES_IN_ORDER`].
+    pub fn from_activation_heights(height: impl Fn(NetworkUpgrade) -> Option<BlockHeight>) -> Self {
+        let mut previous: Option<(NetworkUpgrade, BlockHeight)> = None;
+        for &upgrade in UPGRADES_IN_ORDER {
+            let Some(at) = height(upgrade) else { continue };
+            if let Some((before, from)) = previous {
+                assert!(
+                    from <= at,
+                    "{upgrade} activates at {at}, below {before} at {from}"
+                );
+            }
+            previous = Some((upgrade, at));
+        }
+
+        LocalNetwork {
+            overwinter: height(NetworkUpgrade::Overwinter),
+            sapling: height(NetworkUpgrade::Sapling),
+            blossom: height(NetworkUpgrade::Blossom),
+            heartwood: height(NetworkUpgrade::Heartwood),
+            canopy: height(NetworkUpgrade::Canopy),
+            nu5: height(NetworkUpgrade::Nu5),
+            nu6: height(NetworkUpgrade::Nu6),
+            nu6_1: height(NetworkUpgrade::Nu6_1),
+            nu6_2: height(NetworkUpgrade::Nu6_2),
+            nu6_3: height(NetworkUpgrade::Nu6_3),
+            nu7: height(NetworkUpgrade::Nu7),
+            #[cfg(zcash_unstable = "nutachyon")]
+            nu_tachyon: height(NetworkUpgrade::NuTachyon),
+        }
+    }
+}
+
 /// Parameters implementation for `LocalNetwork`
 impl Parameters for LocalNetwork {
     fn network_type(&self) -> NetworkType {
@@ -83,10 +125,38 @@ impl Parameters for LocalNetwork {
 #[cfg(test)]
 mod tests {
     use crate::{
-        consensus::{BlockHeight, NetworkConstants, NetworkUpgrade, Parameters},
+        consensus::{
+            BlockHeight, MAIN_NETWORK, NetworkConstants, NetworkUpgrade, Parameters,
+            UPGRADES_IN_ORDER,
+        },
         constants,
         local_consensus::LocalNetwork,
     };
+
+    #[test]
+    fn from_activation_heights_copies_every_upgrade() {
+        let copied = LocalNetwork::from_activation_heights(|nu| MAIN_NETWORK.activation_height(nu));
+        for &upgrade in UPGRADES_IN_ORDER {
+            assert_eq!(
+                copied.activation_height(upgrade),
+                MAIN_NETWORK.activation_height(upgrade),
+                "{upgrade}"
+            );
+        }
+
+        let shared = BlockHeight::from_u32(1);
+        let all_at_one = LocalNetwork::from_activation_heights(|_| Some(shared));
+        assert!(all_at_one.is_nu_active(NetworkUpgrade::Nu7, shared));
+    }
+
+    #[test]
+    #[should_panic(expected = "activates at 1, below")]
+    fn from_activation_heights_refuses_an_upgrade_out_of_order() {
+        LocalNetwork::from_activation_heights(|nu| match nu {
+            NetworkUpgrade::Sapling => Some(BlockHeight::from_u32(1)),
+            _ => Some(BlockHeight::from_u32(2)),
+        });
+    }
 
     #[test]
     fn regtest_nu_activation() {

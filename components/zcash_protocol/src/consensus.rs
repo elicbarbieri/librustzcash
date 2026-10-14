@@ -773,7 +773,7 @@ impl NetworkUpgrade {
 ///
 /// This order corresponds to the activation heights, but because Rust enums are
 /// full-fledged algebraic data types, we need to define it manually.
-const UPGRADES_IN_ORDER: &[NetworkUpgrade] = &[
+pub const UPGRADES_IN_ORDER: &[NetworkUpgrade] = &[
     NetworkUpgrade::Overwinter,
     NetworkUpgrade::Sapling,
     NetworkUpgrade::Blossom,

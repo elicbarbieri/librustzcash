@@ -15,6 +15,10 @@ workspace.
 - `zcash_protocol::consensus::{PRE_BLOSSOM_POW_TARGET_SPACING, POST_NU7_POW_TARGET_SPACING,
   target_spacing}`: the target block spacing in force at a height (150 s before Blossom, 75 s
   from Blossom, 25 s from NU7 per ZIP 218).
+- `zcash_protocol::consensus::UPGRADES_IN_ORDER` is now public.
+- `zcash_protocol::local_consensus::LocalNetwork::from_activation_heights`, which builds a
+  `LocalNetwork` from a height per network upgrade (for example another network's parameters, or
+  the heights a node reports), panicking if the upgrades would activate out of order.
 
 ## [0.11.0-pre.0] - 2026-09-30
 
