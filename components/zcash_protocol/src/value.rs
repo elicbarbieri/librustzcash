@@ -24,7 +24,7 @@ pub const MAX_BALANCE: i64 = MAX_MONEY as i64;
 /// invalid ZatBalances would also be rejected by the network consensus rules.)
 ///
 /// [`Transaction`]: https://docs.rs/zcash_primitives/latest/zcash_primitives/transaction/struct.Transaction.html
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, PartialOrd, Eq, Ord)]
 pub struct ZatBalance(i64);
 
 #[cfg(feature = "std")]

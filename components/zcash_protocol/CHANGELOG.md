@@ -10,6 +10,9 @@ workspace.
 
 ## [Unreleased]
 
+### Added
+- `impl Default for value::ZatBalance` (zero, as `ZatBalance::zero()`)
+
 ## [0.11.0] - 2026-10-21
 
 This release sets the NU7 mainnet activation height to 3543405.
