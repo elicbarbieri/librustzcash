@@ -12,6 +12,9 @@ workspace.
 
 ### Added
 - `impl Default for value::ZatBalance` (zero, as `ZatBalance::zero()`)
+- `zcash_protocol::local_consensus::LocalNetwork::from_activation_heights`, which builds a
+  `LocalNetwork` from a height per network upgrade (for example another network's parameters, or
+  the heights a node reports), panicking if the upgrades would activate out of order.
 
 ## [0.11.0] - 2026-10-21
 
