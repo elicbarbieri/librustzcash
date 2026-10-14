@@ -12,6 +12,7 @@ workspace.
 
 ### Added
 - `impl Eq for {bundle::Bundle, bundle::TxIn}`, where the authorization's `ScriptSig` is `Eq`
+- `impl Hash for address::Script`, over the same bytes its `PartialEq` compares
 
 ## [0.11.0-pre.1] - 2026-10-06
 

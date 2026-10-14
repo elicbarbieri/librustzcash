@@ -59,6 +59,12 @@ impl PartialEq for Script {
 
 impl Eq for Script {}
 
+impl core::hash::Hash for Script {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.0.0.hash(state)
+    }
+}
+
 impl Script {
     pub fn read<R: Read>(reader: R) -> io::Result<Self> {
         Vector::read_bytes(reader).map(|script| Script(script::Code(script)))
