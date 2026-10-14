@@ -10,6 +10,9 @@ workspace.
 
 ## [Unreleased]
 
+### Added
+- `impl Default for value::ZatBalance` (zero, as `ZatBalance::zero()`)
+
 ## [0.11.0-pre.0] - 2026-09-30
 
 This release sets the NU7 activation height to 4465026 on testnet.
