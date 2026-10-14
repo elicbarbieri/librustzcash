@@ -31,6 +31,31 @@ pub const SECONDS_PER_BLOCK: u32 = 75;
 /// The approximate number of blocks produced per hour at [`SECONDS_PER_BLOCK`].
 pub const BLOCKS_PER_HOUR: u32 = 3600 / SECONDS_PER_BLOCK;
 
+/// The target time between blocks before Blossom, in seconds (`PreBlossomPoWTargetSpacing` in
+/// the protocol specification).
+pub const PRE_BLOSSOM_POW_TARGET_SPACING: u32 = 150;
+
+/// The target time between blocks from NU7 onward, in seconds (`PostNU7PoWTargetSpacing` in
+/// [ZIP 218]).
+///
+/// [ZIP 218]: https://zips.z.cash/zip-0218
+pub const POST_NU7_POW_TARGET_SPACING: u32 = 25;
+
+/// The target time between blocks at `height` on the network described by `params`, in seconds
+/// (`PoWTargetSpacing(height)`).
+///
+/// This is [`PRE_BLOSSOM_POW_TARGET_SPACING`] before Blossom, [`SECONDS_PER_BLOCK`] from Blossom,
+/// and [`POST_NU7_POW_TARGET_SPACING`] from NU7.
+pub fn target_spacing<P: Parameters>(params: &P, height: BlockHeight) -> u32 {
+    if params.is_nu_active(NetworkUpgrade::Nu7, height) {
+        POST_NU7_POW_TARGET_SPACING
+    } else if params.is_nu_active(NetworkUpgrade::Blossom, height) {
+        SECONDS_PER_BLOCK
+    } else {
+        PRE_BLOSSOM_POW_TARGET_SPACING
+    }
+}
+
 impl BlockHeight {
     pub const fn from_u32(v: u32) -> BlockHeight {
         BlockHeight(v)
@@ -1105,6 +1130,21 @@ mod tests {
         BlockHeight, BranchId, MAIN_NETWORK, NetworkUpgrade, Parameters, TEST_NETWORK,
         UPGRADES_IN_ORDER,
     };
+
+    #[test]
+    fn target_spacing_switches_at_blossom_and_nu7() {
+        use super::{SECONDS_PER_BLOCK, target_spacing};
+
+        let blossom = MAIN_NETWORK
+            .activation_height(NetworkUpgrade::Blossom)
+            .unwrap();
+        assert_eq!(target_spacing(&MAIN_NETWORK, blossom - 1), 150);
+        assert_eq!(target_spacing(&MAIN_NETWORK, blossom), SECONDS_PER_BLOCK);
+
+        let nu7 = TEST_NETWORK.activation_height(NetworkUpgrade::Nu7).unwrap();
+        assert_eq!(target_spacing(&TEST_NETWORK, nu7 - 1), SECONDS_PER_BLOCK);
+        assert_eq!(target_spacing(&TEST_NETWORK, nu7), 25);
+    }
 
     #[test]
     #[cfg(feature = "local-consensus")]

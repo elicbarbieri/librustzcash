@@ -12,6 +12,9 @@ workspace.
 
 ### Added
 - `impl Default for value::ZatBalance` (zero, as `ZatBalance::zero()`)
+- `zcash_protocol::consensus::{PRE_BLOSSOM_POW_TARGET_SPACING, POST_NU7_POW_TARGET_SPACING,
+  target_spacing}`: the target block spacing in force at a height (150 s before Blossom, 75 s
+  from Blossom, 25 s from NU7 per ZIP 218).
 
 ## [0.11.0-pre.0] - 2026-09-30
 
