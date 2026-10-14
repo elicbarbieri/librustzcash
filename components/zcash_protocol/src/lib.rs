@@ -31,6 +31,9 @@ pub mod memo;
 pub mod value;
 pub mod zip318;
 
+mod block_hash;
+pub use block_hash::BlockHash;
+
 mod txid;
 pub use txid::TxId;
 

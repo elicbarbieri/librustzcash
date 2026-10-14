@@ -26,6 +26,7 @@ workspace.
   take any `orchard::bundle::BundleEncoding` (was `orchard::Bundle`).
 - `Transaction::read` returns a point that breaks its encoding rules as an
   `io::ErrorKind::InvalidData` error wrapping a `DecompressionError`.
+- `zcash_primitives::block::BlockHash` is now a re-export of `zcash_protocol::BlockHash`.
 
 ## [0.31.0-pre.1] - 2026-10-06
 

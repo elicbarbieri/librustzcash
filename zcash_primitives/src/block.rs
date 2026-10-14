@@ -5,15 +5,12 @@
 // beta lints attempt to rewrite `corez::io::Error::new` calls to `std::io::Error::other`
 #![allow(clippy::io_other_error)]
 
-use alloc::string::ToString;
 use alloc::vec::Vec;
-use core::fmt;
 use core::ops::Deref;
 use corez::io::{self, ErrorKind, Read, Write};
 use transparent::bundle::OutPoint;
 use zcash_script::{Opcode, opcode::PossiblyBad};
 
-use memuse::DynamicUsage;
 use nonempty::NonEmpty;
 use sha2::{Digest, Sha256};
 
@@ -27,54 +24,7 @@ use crate::{
 
 pub use equihash;
 
-/// The identifier for a Zcash block.
-///
-/// This is the SHA-256d hash of the encoded [`BlockHeader`].
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BlockHash(pub [u8; 32]);
-
-memuse::impl_no_dynamic_usage!(BlockHash);
-
-impl fmt::Debug for BlockHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // The (byte-flipped) hex string is more useful than the raw bytes, because we can
-        // look that up in RPC methods and block explorers.
-        let block_hash_str = self.to_string();
-        f.debug_tuple("BlockHash").field(&block_hash_str).finish()
-    }
-}
-
-impl fmt::Display for BlockHash {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut data = self.0;
-        data.reverse();
-        formatter.write_str(&hex::encode(data))
-    }
-}
-
-impl BlockHash {
-    /// Constructs a [`BlockHash`] from the given slice.
-    ///
-    /// # Panics
-    ///
-    /// This function will panic if the slice is not exactly 32 bytes.
-    pub fn from_slice(bytes: &[u8]) -> Self {
-        Self::try_from_slice(bytes).unwrap()
-    }
-
-    /// Constructs a [`BlockHash`] from the given slice.
-    ///
-    /// Returns `None` if `bytes` has any length other than 32
-    pub fn try_from_slice(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() == 32 {
-            let mut hash = [0; 32];
-            hash.copy_from_slice(bytes);
-            Some(BlockHash(hash))
-        } else {
-            None
-        }
-    }
-}
+pub use zcash_protocol::BlockHash;
 
 /// A Zcash block header.
 #[derive(Debug)]
