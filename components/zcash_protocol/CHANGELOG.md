@@ -21,6 +21,8 @@ workspace.
   the heights a node reports), panicking if the upgrades would activate out of order.
 - `zcash_protocol::BlockHash` (moved from `zcash_primitives::block`, which re-exports it), with
   `BlockHash::{as_hex, from_hex}` for its canonical byte-reversed hexadecimal form.
+- `zcash_protocol::ShieldedPool::{ALL, activation_upgrade}`: every shielded pool, and the network
+  upgrade that activated each.
 
 ## [0.11.0-pre.0] - 2026-09-30
 

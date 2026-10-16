@@ -48,6 +48,21 @@ pub enum ShieldedPool {
     Ironwood,
 }
 
+impl ShieldedPool {
+    /// Every shielded pool, in the order its network upgrade activated.
+    pub const ALL: [ShieldedPool; 3] =
+        [ShieldedPool::Sapling, ShieldedPool::Orchard, ShieldedPool::Ironwood];
+
+    /// The network upgrade that activated this pool; it holds no notes before that upgrade.
+    pub const fn activation_upgrade(self) -> consensus::NetworkUpgrade {
+        match self {
+            ShieldedPool::Sapling => consensus::NetworkUpgrade::Sapling,
+            ShieldedPool::Orchard => consensus::NetworkUpgrade::Nu5,
+            ShieldedPool::Ironwood => consensus::NetworkUpgrade::Nu6_3,
+        }
+    }
+}
+
 #[deprecated(note = "Use `ShieldedPool` instead.")]
 pub type ShieldedProtocol = ShieldedPool;
 
